@@ -64,9 +64,9 @@ Xcodeから実機へ直接インストールする場合は、`Y3Client.xcodepro
 
 実サイトの確認には、iPhone WebKitのUser-Agentを設定したChromiumを使用しました。iPhone上のWebKitエンジンでの実行確認とは異なります。
 
-2026年10月11日、公開リポジトリの一時ビルド用フォルダーで、GitHub ActionsのmacOS 15 runnerとXcode 16.4（16F6）による無署名iOS Simulatorビルドが[成功しました](https://github.com/444yttt/astro-blog-starter-template/actions/runs/38126986127)。Apple SDKによるコンパイルは確認済みです。署名済みIPAの生成、iPhone実機での動作、AirPrintの出力結果、iOS上の共有画面は未確認です。
+2026年10月11日、専用公開リポジトリで、GitHub ActionsのmacOS 15 runnerとXcode 16.4（16F6）による無署名iOS Simulatorビルドが[成功しました](https://github.com/444yttt/Y3POSClient/actions/runs/38128904890)。Apple SDKによるコンパイルは確認済みです。署名済みIPAの生成、iPhone実機での動作、AirPrintの出力結果、iOS上の共有画面は未確認です。
 
-作成環境はLinuxです。Xcodeプロジェクトの参照・設定・アイコン形式とSwiftの構文、CIのProfile準備と署名検証処理も検証しています。専用の公開リポジトリへの移行と署名用Secretsの準備は別途必要です。
+Xcodeプロジェクトの参照・設定・アイコン形式とSwiftの構文、CIのProfile準備と署名検証処理も検証しています。既存署名資産は、別アプリ用Profileをそのまま流用せず、このアプリのBundle IDに対応するProfileと組み合わせます。
 
 外部ライブラリやSwift Packageの追加はありません。Appleの標準フレームワークを使います。Pythonによる構造・構文検証は次の通りです。
 

@@ -1,6 +1,6 @@
 # GitHub ActionsによるIPA作成
 
-このフォルダーは、新しい公開リポジトリ `444yttt/Y3POSClient` の候補として分離したソースです。準備段階ではリポジトリの作成・公開・pushを行っていません。既存の非公開マニュアルリポジトリの公開範囲、履歴、ソース、workflowは変更しません。
+専用の公開リポジトリは [444yttt/Y3POSClient](https://github.com/444yttt/Y3POSClient) です。既存のマニュアルリポジトリは非公開のまま維持します。
 
 ## ビルド設定
 
@@ -32,7 +32,7 @@ App Store向けIPAは、ファイルをiPhoneへ渡すだけではインスト�
 
 Profileを登録しない場合は、同じ新リポジトリに `ASC_KEY_ID`、`ASC_ISSUER_ID`、`ASC_PRIVATE_KEY` を登録します。`ASC_PRIVATE_KEY`は対応する`.p8`ファイルのPEM本文です。APIキーにはCertificates, Identifiers & Profilesへのアクセス権限が必要です。
 
-この候補を準備したGitHub連携ではSecretsの設定APIが403となるため、Secretsを新リポジトリへ登録・移行できたとは扱っていません。.p12、パスワード、Profile、API秘密鍵をソース、Issue、Actions入力欄、チャットに貼り付けないでください。
+.p12、パスワード、Profile、API秘密鍵をソース、Issue、Actions入力欄、チャットに貼り付けないでください。SecretsはGitHubのSecrets画面または所有者の認証を使う暗号化された登録経路で設定します。
 
 ## 署名とProfileの準備
 
