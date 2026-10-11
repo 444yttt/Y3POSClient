@@ -1,0 +1,83 @@
+name: Build Y3 POS Client IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Approved source branch (fixed to main)
+        type: string
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: y3posclient-signed-ipa
+  cancel-in-progress: false
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    defaults:
+      run:
+        shell: bash
+        working-directory: .
+    steps:
+      - name: Require the approved source branch
+        working-directory: ${{ github.workspace }}
+        env:
+          REQUESTED_SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$REQUESTED_SOURCE_REF" != main ]]; then
+            echo '::error::Only the approved main branch can access the signing secrets.'
+            exit 1
+          fi
+
+      - name: Checkout the approved client source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Compile, restore existing signing assets, and export locally
+        id: signing
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 || secrets.DIST_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD || secrets.DIST_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: bash scripts/ci-sign-and-export.sh
+
+      - name: Encrypt the verified IPA for the recipient
+        id: encryption
+        env:
+          IPA_PATH: ${{ steps.signing.outputs.ipa_path }}
+          VERIFICATION_PATH: ${{ steps.signing.outputs.verification_path }}
+          DELIVERY_RECIPIENT_FILE: delivery-recipient.txt
+        run: bash scripts/encrypt-delivery.sh
+
+      - name: Save the encrypted delivery package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Y3POSClient-EncryptedIPA-${{ github.run_number }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 7
+          path: ${{ steps.encryption.outputs.encrypted_path }}
+
+      - name: Remove temporary signing assets
+        if: ${{ always() }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [[ -f scripts/ci-sign-and-export.sh ]]; then
+            bash scripts/ci-sign-and-export.sh --cleanup-only
+          fi
