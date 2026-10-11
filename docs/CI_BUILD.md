@@ -20,7 +20,7 @@ App Store向けIPAは、ファイルをiPhoneへ渡すだけではインスト�
 
 ## 現在の実行結果
 
-2026年10月11日の[署名ビルド](https://github.com/444yttt/Y3POSClient/actions/runs/38135157849)で、Simulatorビルド、実機向けRelease archive、App Store配布用IPAの書き出しと署名検証が成功しました。ビルドしたcommitは`676a8cb1e03673c100bf163b6bb03777bec303f6`、バージョンは`1.0.0`、ビルド番号は`1`です。Apple Developerで作成した専用Profileを`BUILD_PROVISION_PROFILE_BASE64`へ登録し、既存P12の署名証明書を使用しています。
+2026年10月11日の[署名ビルド](https://github.com/444yttt/Y3POSClient/actions/runs/38138527435)で、UI改訂版のSimulatorビルド、実機向けRelease archive、App Store配布用IPAの書き出しと署名検証が成功しました。ビルドしたcommitは`b065375697fa30e1c9929a69b7db6448cd1dd20c`、バージョンは`1.1.0`、ビルド番号は`2`です。Apple Developerで作成した専用Profileを`BUILD_PROVISION_PROFILE_BASE64`へ登録し、既存P12の署名証明書を使用しています。
 
 Profileの有効期限は`2027-09-28T14:59:37Z`です。arm64の署名、Bundle ID、証明書、Entitlements、Profileの一致と期限など15項目の検証が通り、受け取り後もIPAのSHA256と埋め込みProfileを照合しました。Extensionはありません。iPhone実機での動作、AirPrint、共有画面は未確認です。
 

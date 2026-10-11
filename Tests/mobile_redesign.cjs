@@ -8,7 +8,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
 const origin = 'https://adidas-y3.poscmcloud.jp:15505';
 const sourcePath = path.join(__dirname, '../Y3Client/LegacySiteSupport.swift');
-const outputPath = process.env.MOBILE_QA_OUTPUT || '/workspace/scratch/y3-mobile-redesign-qa';
+const outputPath = process.env.MOBILE_QA_OUTPUT || path.join(require('node:os').tmpdir(), 'y3-mobile-redesign-qa');
 const source = fs.readFileSync(sourcePath, 'utf8');
 const getScript = name => {
   const match = source.match(new RegExp(`static let ${name} = #"""([\\s\\S]*?)"""#`));

@@ -66,7 +66,7 @@ Xcodeから実機へ直接インストールする場合は、`Y3Client.xcodepro
 
 実サイトの確認には、iPhone WebKitのUser-Agentを設定したChromiumを使用しました。iPhone上のWebKitエンジンでの実行確認とは異なります。
 
-2026年10月11日、GitHub ActionsのmacOS 15 runnerとXcode 16.4（16F6）で、iOS Simulatorビルド、実機向けRelease archive、App Store配布用IPAの署名・書き出し・署名検証が[成功しました](https://github.com/444yttt/Y3POSClient/actions/runs/38135157849)。バージョンは`1.0.0`、ビルド番号は`1`です。IPAと検証結果はageで暗号化して保存しています。署名検証結果と取得方法は[CI_BUILD.md](docs/CI_BUILD.md#現在の実行結果)を参照してください。
+2026年10月11日、GitHub ActionsのmacOS 15 runnerとXcode 16.4（16F6）で、UI改訂版のiOS Simulatorビルド、実機向けRelease archive、App Store配布用IPAの署名・書き出し・署名検証が[成功しました](https://github.com/444yttt/Y3POSClient/actions/runs/38138527435)。バージョンは`1.1.0`、ビルド番号は`2`です。IPAと検証結果はageで暗号化して保存しています。署名検証結果と取得方法は[CI_BUILD.md](docs/CI_BUILD.md#現在の実行結果)を参照してください。
 
 iPhone実機での動作、AirPrintの出力結果、iOS上の共有画面は未確認です。
 
