@@ -29,6 +29,14 @@ import uuid
 API_ORIGIN = "https://api.appstoreconnect.apple.com"
 CLIENT_BUNDLE_ID = "com.ayato.y3posclient"
 DEFAULT_PROFILE_NAME = "Y3POSClient-AppStore-GitHubActions"
+# Error bodies can contain request inputs. Only these documented, fixed codes
+# are suitable for CI diagnostics; titles/details and unknown codes stay private.
+SAFE_APPLE_ERROR_CODES = frozenset({
+    "FORBIDDEN_ERROR", "NOT_AUTHORIZED", "UNAUTHORIZED_ERROR",
+    "ENTITY_ERROR", "ENTITY_NOT_FOUND", "PARAMETER_ERROR", "STATE_ERROR",
+    "UNEXPECTED_ERROR", "RATE_LIMIT_EXCEEDED", "CONFLICT_ERROR",
+    "ENTITY_ERROR.ATTRIBUTE.INVALID", "ENTITY_ERROR.RELATIONSHIP.INVALID",
+})
 
 
 class SigningError(RuntimeError):
@@ -153,15 +161,18 @@ class AppleAPI:
                 try:
                     errors = json.loads(exc.read(65536)).get("errors", [])
                     codes = [e.get("code", "") for e in errors]
-                    codes = [c for c in codes if re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", c)]
+                    codes = sorted({c for c in codes if isinstance(c, str)
+                                    and re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", c)
+                                    and c in SAFE_APPLE_ERROR_CODES})
                 except (ValueError, AttributeError, TypeError):
                     codes = []
                 if exc.code == 401:
                     reason = "Check ASC_KEY_ID, ASC_ISSUER_ID and the matching ASC_PRIVATE_KEY."
                 elif exc.code == 403:
-                    reason = "The existing API key needs Certificates, Identifiers & Profiles access and permission to register this bundle/profile."
+                    reason = "Check the API key's Certificates, Identifiers & Profiles permission and any pending Apple account agreements."
                 else:
-                    reason = "Apple error codes: " + (", ".join(codes) or "unavailable")
+                    reason = "Check Apple's API request requirements."
+                reason += " Apple error codes: " + (", ".join(codes) or "unavailable") + "."
                 raise SigningError(f"Apple API {method} {parsed.path} failed (HTTP {exc.code}). {reason}") from None
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 if method == "GET" and attempt < 2:
@@ -243,7 +254,7 @@ def validate_profile(resource: dict, certificate_der: bytes, bundle_id: str, tea
     }
 
 
-def prepare_profile(api: AppleAPI, certificate_der: bytes, bundle_id: str, team_id: str, profile_name: str) -> tuple[bytes, dict]:
+def prepare_profile(api: AppleAPI, certificate_der: bytes, bundle_id: str, team_id: str, profile_name: str, readiness_path: Path | None = None) -> tuple[bytes, dict]:
     if bundle_id != CLIENT_BUNDLE_ID:
         raise SigningError("This helper may only provision com.ayato.y3posclient.")
     if not re.fullmatch(r"[A-Z0-9]{10}", team_id):
@@ -266,6 +277,16 @@ def prepare_profile(api: AppleAPI, certificate_der: bytes, bundle_id: str, team_
         break
     if certificate is None:
         raise SigningError("The imported P12 certificate is not present in the existing API key's Apple team. No new certificate was created.")
+
+    # This does not claim that an app profile exists. The private bridge may
+    # recover the verified existing identity if later bundle/profile access fails.
+    if readiness_path is not None:
+        write_private(readiness_path, (json.dumps({
+            "distribution_certificate_validated": True,
+            "bundle_identifier": bundle_id,
+            "team_identifier": team_id,
+            "certificate_sha1": fingerprint.hex().upper(),
+        }) + "\n").encode())
 
     bundles = api.collection("/v1/bundleIds", {"filter[identifier]": bundle_id, "filter[platform]": "IOS"})
     bundles = [r for r in bundles if r.get("attributes", {}).get("identifier") == bundle_id and r.get("attributes", {}).get("platform") == "IOS"]
@@ -332,20 +353,26 @@ def main() -> int:
     parser.add_argument("--certificate-der", type=Path, required=True)
     parser.add_argument("--output-profile", type=Path, required=True)
     parser.add_argument("--bundle-id", required=True)
-    parser.add_argument("--team-id", required=True)
+    parser.add_argument("--team-id", default=os.environ.get("APPLE_TEAM_ID", ""))
     parser.add_argument("--output-metadata", type=Path, required=True)
+    parser.add_argument("--output-readiness", type=Path,
+                        help="Private marker written only after remote distribution-certificate validation.")
     parser.add_argument("--profile-name", default=DEFAULT_PROFILE_NAME)
     args = parser.parse_args()
     try:
+        if args.output_readiness is not None:
+            args.output_readiness.unlink(missing_ok=True)
         if args.bundle_id != CLIENT_BUNDLE_ID:
             raise SigningError("This helper may only provision com.ayato.y3posclient.")
+        if not args.team_id:
+            raise SigningError("CI must provide APPLE_TEAM_ID or --team-id.")
         values = {name: os.environ.get(name, "") for name in ("ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_KEY_PATH")}
         if any(not value for value in values.values()):
             raise SigningError("CI must provide ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_PATH.")
         certificate_der = args.certificate_der.read_bytes()
         run_openssl(["x509", "-inform", "DER", "-noout", "-checkend", "0"], certificate_der)
         token = make_jwt(values["ASC_KEY_ID"], values["ASC_ISSUER_ID"], Path(values["ASC_KEY_PATH"]))
-        raw, metadata = prepare_profile(AppleAPI(token), certificate_der, args.bundle_id, args.team_id, args.profile_name)
+        raw, metadata = prepare_profile(AppleAPI(token), certificate_der, args.bundle_id, args.team_id, args.profile_name, args.output_readiness)
         write_private(args.output_profile, raw)
         write_private(args.output_metadata, (json.dumps(metadata, indent=2) + "\n").encode())
         print("Y3 POS Client App Store profile " + ("reused" if metadata["reused"] else "created") + ".")
