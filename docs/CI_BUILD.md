@@ -4,7 +4,7 @@
 
 ## ビルド設定
 
-- Source branch: `main`（署名Secretsを使う参照先として固定）
+- Source branch: `main`（手動実行時のcommitへ固定）
 - Source directory: リポジトリのルート
 - Project / shared Scheme / Target: `Y3Client.xcodeproj` / `Y3Client` / `Y3Client`
 - Bundle ID: `com.ayato.y3posclient`
@@ -46,11 +46,13 @@ Profileが未設定の場合は、登録されたASCキーを使い、既存.p12
 
 Secretsを用意する前でも、Actionsの `Check Y3 POS Client iOS Build` でApple SDKによる無署名Simulatorビルドを確認できます。このworkflowはSecretsの参照や署名資産の復元を行いません。
 
-Secretsの登録後、Actionsから `Build Y3 POS Client IPA` を手動実行します。`source_ref`は`main`だけを受け付けます。Xcode 16.4を確認し、無署名Simulatorビルドの後、実機Releaseのarchive・manual export・署名検証を行います。
+Secretsの登録後、Actionsから `Build Y3 POS Client IPA` を手動実行します。`source_ref`は`main`だけを受け付けます。専用リポジトリの`main`から手動実行した場合にだけ動作し、実行開始時のcommitをビルドします。Xcode 16.4を確認し、無署名Simulatorビルドの後、実機Releaseのarchive・manual export・署名検証を行います。
 
 出力IPAの全architectureについて、コード署名、Bundle、実署名証明書、Entitlements、埋め込みProfile、期限、選択したProfileとの一致を検証します。成功した場合だけIPAと検証JSONをまとめ、受取人のage公開鍵で暗号化した`.age`ファイルだけをArtifactとして7日間保存します。平文のIPA、検証JSON、生のProfile、証明書ファイル、.p12、API秘密鍵、一時Keychain、archiveはアップロードしません。
 
 公開リポジトリのActions Artifactは、リポジトリを閲覧できるGitHub利用者がダウンロードできますが、このworkflowが保存するのは暗号化済みパッケージだけです。IPAには署名証明書と埋め込みProfileが含まれるため、これらのTeam情報や証明書名も暗号化して保護します。
+
+Artifactのダウンロード経路が使えない場合に備え、別のUbuntuジョブが同じ暗号化ファイルだけを一時的なDraft Releaseにも保存します。Draftは公開せず、タグは`ci-delivery-実行番号-試行番号`です。このジョブには署名用Secretsを渡しません。所有者はDraftのassetを取得して復号・内容確認後、不要になったDraftを削除してください。平文のIPAや検証JSONをReleaseへ保存する処理はありません。
 
 `delivery-recipient.txt`に入れるのは受取人のage公開鍵だけで、ソースへ登録できます。対応する秘密identityは受取人側で保管し、リポジトリ、Secrets、Actions入力欄、Artifactへ入れません。暗号化に追加のSecretsは不要です。生成する秘密identityはソース候補の外で保管します。受取人は秘密identityを使ってダウンロードした`.age`を復号し、中のIPAと検証JSONを取り出します。
 

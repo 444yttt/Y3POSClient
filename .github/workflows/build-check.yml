@@ -8,15 +8,16 @@ permissions:
 
 jobs:
   simulator-build:
+    if: ${{ github.repository == '444yttt/Y3POSClient' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
     runs-on: macos-15
     timeout-minutes: 15
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
-      - name: Checkout the source on main
+      - name: Checkout the selected main commit
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Compile with the iOS Simulator SDK
