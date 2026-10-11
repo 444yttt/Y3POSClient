@@ -1,0 +1,126 @@
+name: Deliver Encrypted Signing Certificate Metadata
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: y3posclient-signing-metadata
+  cancel-in-progress: false
+
+jobs:
+  signing-metadata:
+    if: ${{ github.repository == '444yttt/Y3POSClient' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout the selected main commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Identify the existing certificate and encrypt its metadata
+        id: metadata
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          DELIVERY_RECIPIENT_FILE: delivery-recipient.txt
+        run: python3 scripts/ci-signing-metadata.py
+
+      - name: Save only the encrypted certificate metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Y3POSClient-EncryptedSigningMetadata-${{ github.run_number }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 1
+          path: ${{ steps.metadata.outputs.encrypted_path }}
+
+      - name: Remove temporary delivery files
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import shutil
+
+          runner = pathlib.Path(os.environ['RUNNER_TEMP'])
+          directories = [runner / 'y3pos-metadata-encrypted-delivery', *runner.glob('y3pos-signing-metadata-*')]
+          for directory in directories:
+              if directory.is_symlink():
+                  directory.unlink()
+              elif directory.is_dir():
+                  shutil.rmtree(directory)
+          PY
+
+  delivery-copy:
+    needs: signing-metadata
+    if: ${{ github.repository == '444yttt/Y3POSClient' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.signing-metadata.result == 'success' }}
+    permissions:
+      actions: read
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Download this run's encrypted certificate metadata
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: Y3POSClient-EncryptedSigningMetadata-${{ github.run_number }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/y3pos-metadata-release-delivery
+          digest-mismatch: error
+
+      - name: Keep the ciphertext in a temporary draft release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_COMMIT: ${{ github.sha }}
+          DRAFT_TAG: ci-signing-metadata-${{ github.run_number }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import stat
+
+          directory = pathlib.Path(os.environ['RUNNER_TEMP']) / 'y3pos-metadata-release-delivery'
+          if directory.is_symlink() or not directory.is_dir():
+              raise SystemExit('Encrypted certificate metadata directory is missing or invalid.')
+          entries = list(directory.iterdir())
+          if len(entries) != 1 or entries[0].name != 'signing-metadata.json.age':
+              raise SystemExit('Expected only signing-metadata.json.age.')
+          package = entries[0]
+          if not stat.S_ISREG(package.lstat().st_mode) or package.stat().st_size <= 22:
+              raise SystemExit('Encrypted certificate metadata must be a regular age file.')
+          with package.open('rb') as stream:
+              if stream.read(22) != b'age-encryption.org/v1\n':
+                  raise SystemExit('Encrypted certificate metadata has an invalid age header.')
+          PY
+          gh release create "$DRAFT_TAG" "$RUNNER_TEMP/y3pos-metadata-release-delivery/signing-metadata.json.age" \
+            --repo "$REPOSITORY" --draft --target "$SOURCE_COMMIT" --latest=false \
+            --title 'Y3 POS encrypted signing metadata (temporary)' \
+            --notes 'Encrypted certificate identification metadata. Temporary draft for the recipient.'
+
+      - name: Remove the downloaded ciphertext
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import shutil
+
+          directory = pathlib.Path(os.environ['RUNNER_TEMP']) / 'y3pos-metadata-release-delivery'
+          if directory.is_symlink():
+              directory.unlink()
+          elif directory.is_dir():
+              shutil.rmtree(directory)
+          PY
