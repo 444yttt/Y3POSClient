@@ -18,19 +18,17 @@
 
 App Store向けIPAは、ファイルをiPhoneへ渡すだけではインストールできません。直接配布へ変更する場合は、Ad Hoc用のProfileと登録済みUDIDが必要です。
 
-## 現在の実行結果と再開方法
+## 現在の実行結果
 
-2026年10月11日、[専用リポジトリの無署名Simulatorビルド](https://github.com/444yttt/Y3POSClient/actions/runs/38128904890)が成功しました。[署名ビルド](https://github.com/444yttt/Y3POSClient/actions/runs/38129514612)も実際にmacOS runnerで起動し、ソースのコンパイル、P12 import、codesignが秘密鍵を使うためのKeychain設定、有効な署名identityとTeamの照合まで通過しました。
+2026年10月11日の[署名ビルド](https://github.com/444yttt/Y3POSClient/actions/runs/38135157849)で、Simulatorビルド、実機向けRelease archive、App Store配布用IPAの書き出しと署名検証が成功しました。ビルドしたcommitは`676a8cb1e03673c100bf163b6bb03777bec303f6`、バージョンは`1.0.0`、ビルド番号は`1`です。Apple Developerで作成した専用Profileを`BUILD_PROVISION_PROFILE_BASE64`へ登録し、既存P12の署名証明書を使用しています。
 
-既存署名環境から、`BUILD_CERTIFICATE_BASE64`、`P12_PASSWORD`、`KEYCHAIN_PASSWORD`、`APPLE_TEAM_ID`、`ASC_KEY_ID`、`ASC_ISSUER_ID`、`ASC_PRIVATE_KEY`の7つをこのリポジトリのSecretsへ登録済みです。秘密鍵と証明書の一致、期限、Apple上の対応する配布証明書も検証しました。既存マニュアル用Profileは移していません。
+Profileの有効期限は`2027-09-28T14:59:37Z`です。arm64の署名、Bundle ID、証明書、Entitlements、Profileの一致と期限など15項目の検証が通り、受け取り後もIPAのSHA256と埋め込みProfileを照合しました。Extensionはありません。iPhone実機での動作、AirPrint、共有画面は未確認です。
 
-停止箇所はApple APIの`POST /v1/bundleIds`です。`403 / FORBIDDEN_ERROR`により`com.ayato.y3posclient`の登録と専用Profileの作成ができず、archive・IPA exportは実行していません。復元した署名資産と一時Keychainの削除は成功しました。
+既存署名環境から`BUILD_CERTIFICATE_BASE64`、`P12_PASSWORD`、`KEYCHAIN_PASSWORD`、`APPLE_TEAM_ID`、`ASC_KEY_ID`、`ASC_ISSUER_ID`、`ASC_PRIVATE_KEY`を登録し、専用Profileを加えて8つのSecretsを準備済みです。[専用Profileの登録実行](https://github.com/444yttt/Y3POSClient/actions/runs/38135082128)でも、既存P12との一致を検証しました。既存マニュアル用Profileは流用していません。今回のビルドでは登録済みProfileを使用し、Profile作成APIは呼び出していません。
 
-再開するには、同じAppleチームで新App IDとProfileを登録できるTeam APIキーを用意します。Account HolderまたはAdminが[App Store ConnectのTeam Keys](https://appstoreconnect.apple.com/access/integrations/api)でAdmin権限のキーを作り、[このリポジトリのActions Secrets](https://github.com/444yttt/Y3POSClient/settings/secrets/actions)の`ASC_KEY_ID`と`ASC_PRIVATE_KEY`を更新してください。Issuer IDが同じチームの既存値と異なる場合は`ASC_ISSUER_ID`も更新します。Apple Developerの管理画面に未同意の契約が表示される場合は、Account Holderが先に確認します。既存マニュアルのキーや証明書の削除・失効は不要です。
+成果物はIPAと検証JSONをまとめたage暗号化ファイルで、Actions Artifactの保存期間は7日です。復号には受取人側で保管する秘密identityが必要です。復元した署名ファイル、一時Keychain、ログイン用一時データは削除済みです。
 
-別の方法として、[Apple DeveloperのCertificates, Identifiers & Profiles](https://developer.apple.com/account/resources/identifiers/list)で`com.ayato.y3posclient`用のApp Store Profileを、既存P12に対応する配布証明書を選んで作成し、その`.mobileprovision`のBase64を`BUILD_PROVISION_PROFILE_BASE64`へ登録できます。この場合はProfile作成APIを使わず、登録したProfileを署名前に検証します。
-
-設定後はActionsの`Build Y3 POS Client IPA`を`main`で手動実行します。新Bundle・Profileの準備は自動で続きます。IPAが生成できるまでは、署名完了や配布可能とは扱いません。バージョンは`1.0.0`、ビルド番号は`1`です。
+書き出し方式は`app-store-connect`です。IPAをiPhoneへ渡すだけではインストールできません。このworkflowはTestFlightやApp Storeへのアップロードを行いません。直接配布には、登録済みUDIDを含むAd Hoc Profileと対応する書き出し設定が必要です。
 
 ## このリポジトリに登録するSecrets
 
@@ -55,6 +53,12 @@ Profileを登録しない場合は、同じ新リポジトリに `ASC_KEY_ID`、
 Profileが未設定の場合は、登録されたASCキーを使い、既存.p12の証明書に合う `com.ayato.y3posclient` 用のProfileを取得します。未登録なら、このBundle IDとApp Store Profileだけを作成します。既存アプリのProfile、証明書の新規作成・失効、既存アプリの設定変更は行いません。
 
 署名前に秘密鍵identity、ProfileのTeam・App ID prefix・Bundle・許可証明書・期限・配布方式を照合します。署名設定は対象ターゲットにだけ一時的に適用し、ソースのTeam設定は空欄へ戻します。新しいExtension等を追加した場合は、そのターゲット用Profileと検証対応を追加するまで停止します。
+
+### 専用Profileの暗号化登録
+
+`profile-secret.yml`は、レビュー済みの`main`コミットを`expected_source_sha`に指定して開始します。受取人向けに暗号化した一回限りのchallengeを発行し、`profile-secret-reply.yml`で暗号化した応答を受け取ります。応答は同じコミット、実行ID、試行番号に結び付けられ、有効時間は10分です。GitHub所有者の承認済みOAuth認証情報は暗号化した応答の中だけに渡します。
+
+登録前にTeam、正確なBundle ID、既存P12の証明書、有効期限、App Store配布用Profileであることを検証し、`BUILD_PROVISION_PROFILE_BASE64`だけを更新します。Profileと認証情報は、公開workflow入力とChecksへ暗号文としてのみ渡し、一時ファイルは終了時に削除します。平文のProfileや認証情報をworkflow入力へ貼り付けないでください。
 
 ## 実行と成果物
 
