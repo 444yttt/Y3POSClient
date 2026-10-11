@@ -18,6 +18,20 @@
 
 App Store向けIPAは、ファイルをiPhoneへ渡すだけではインストールできません。直接配布へ変更する場合は、Ad Hoc用のProfileと登録済みUDIDが必要です。
 
+## 現在の実行結果と再開方法
+
+2026年10月11日、[専用リポジトリの無署名Simulatorビルド](https://github.com/444yttt/Y3POSClient/actions/runs/38128904890)が成功しました。[署名ビルド](https://github.com/444yttt/Y3POSClient/actions/runs/38129514612)も実際にmacOS runnerで起動し、ソースのコンパイル、P12 import、codesignが秘密鍵を使うためのKeychain設定、有効な署名identityとTeamの照合まで通過しました。
+
+既存署名環境から、`BUILD_CERTIFICATE_BASE64`、`P12_PASSWORD`、`KEYCHAIN_PASSWORD`、`APPLE_TEAM_ID`、`ASC_KEY_ID`、`ASC_ISSUER_ID`、`ASC_PRIVATE_KEY`の7つをこのリポジトリのSecretsへ登録済みです。秘密鍵と証明書の一致、期限、Apple上の対応する配布証明書も検証しました。既存マニュアル用Profileは移していません。
+
+停止箇所はApple APIの`POST /v1/bundleIds`です。`403 / FORBIDDEN_ERROR`により`com.ayato.y3posclient`の登録と専用Profileの作成ができず、archive・IPA exportは実行していません。復元した署名資産と一時Keychainの削除は成功しました。
+
+再開するには、同じAppleチームで新App IDとProfileを登録できるTeam APIキーを用意します。Account HolderまたはAdminが[App Store ConnectのTeam Keys](https://appstoreconnect.apple.com/access/integrations/api)でAdmin権限のキーを作り、[このリポジトリのActions Secrets](https://github.com/444yttt/Y3POSClient/settings/secrets/actions)の`ASC_KEY_ID`と`ASC_PRIVATE_KEY`を更新してください。Issuer IDが同じチームの既存値と異なる場合は`ASC_ISSUER_ID`も更新します。Apple Developerの管理画面に未同意の契約が表示される場合は、Account Holderが先に確認します。既存マニュアルのキーや証明書の削除・失効は不要です。
+
+別の方法として、[Apple DeveloperのCertificates, Identifiers & Profiles](https://developer.apple.com/account/resources/identifiers/list)で`com.ayato.y3posclient`用のApp Store Profileを、既存P12に対応する配布証明書を選んで作成し、その`.mobileprovision`のBase64を`BUILD_PROVISION_PROFILE_BASE64`へ登録できます。この場合はProfile作成APIを使わず、登録したProfileを署名前に検証します。
+
+設定後はActionsの`Build Y3 POS Client IPA`を`main`で手動実行します。新Bundle・Profileの準備は自動で続きます。IPAが生成できるまでは、署名完了や配布可能とは扱いません。バージョンは`1.0.0`、ビルド番号は`1`です。
+
 ## このリポジトリに登録するSecrets
 
 別リポジトリのSecretsは、新しい公開リポジトリへ自動的に引き継がれません。GitHub APIから既存Secretsの平文を読み戻すこともできません。所有者が署名環境で保管している元ファイルを使い、このリポジトリのSettings → Secrets and variables → Actionsに登録する必要があります。

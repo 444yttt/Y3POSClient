@@ -64,7 +64,9 @@ Xcodeから実機へ直接インストールする場合は、`Y3Client.xcodepro
 
 実サイトの確認には、iPhone WebKitのUser-Agentを設定したChromiumを使用しました。iPhone上のWebKitエンジンでの実行確認とは異なります。
 
-2026年10月11日、専用公開リポジトリで、GitHub ActionsのmacOS 15 runnerとXcode 16.4（16F6）による無署名iOS Simulatorビルドが[成功しました](https://github.com/444yttt/Y3POSClient/actions/runs/38128904890)。Apple SDKによるコンパイルは確認済みです。署名済みIPAの生成、iPhone実機での動作、AirPrintの出力結果、iOS上の共有画面は未確認です。
+2026年10月11日、専用公開リポジトリで、GitHub ActionsのmacOS 15 runnerとXcode 16.4（16F6）による無署名iOS Simulatorビルドが[成功しました](https://github.com/444yttt/Y3POSClient/actions/runs/38128904890)。[署名用workflowの実行](https://github.com/444yttt/Y3POSClient/actions/runs/38129514612)では、最終ソースのSimulatorビルド、既存P12の取り込み、codesign用秘密鍵へのアクセス設定、署名identityとTeamの確認まで成功しました。Apple APIによる新App ID登録が403 `FORBIDDEN_ERROR`となり、専用Profileの準備で停止しました。IPAは未生成です。再開に必要な設定は[CI_BUILD.md](docs/CI_BUILD.md#現在の実行結果と再開方法)に記載しています。
+
+iPhone実機での動作、AirPrintの出力結果、iOS上の共有画面は未確認です。
 
 Xcodeプロジェクトの参照・設定・アイコン形式とSwiftの構文、CIのProfile準備と署名検証処理も検証しています。既存署名資産は、別アプリ用Profileをそのまま流用せず、このアプリのBundle IDに対応するProfileと組み合わせます。
 
