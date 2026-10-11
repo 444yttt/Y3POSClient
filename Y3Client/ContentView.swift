@@ -7,22 +7,15 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
-            BrowserSurface(browser: browser, webView: browser.activeWebView)
-                .navigationTitle(browser.hasPopups ? "別ウィンドウ" : "Y3 Client")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        if browser.hasPopups { Button("閉じる", action: browser.closeTopPopup) }
-                        else {
-                            Label("POS CM CLOUD", systemImage: "lock.fill")
-                                .font(.caption2).foregroundStyle(.secondary)
-                        }
+            VStack(spacing: 0) {
+                BrowserHeader(browser: browser)
+                BrowserSurface(browser: browser, webView: browser.activeWebView)
+            }
+                .toolbar(.hidden, for: .navigationBar)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if !browser.framePanes.isEmpty && browser.failure == nil {
+                        BrowserControls(browser: browser)
                     }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("接続設定", systemImage: "slider.horizontal.3") { browser.showSettings = true }
-                            .labelStyle(.iconOnly)
-                    }
-                    ToolbarItemGroup(placement: .bottomBar) { BrowserControls(browser: browser).labelStyle(.iconOnly) }
                 }
                 .disabled(browser.isResetting)
                 .sheet(item: $browser.sheet, onDismiss: browser.sheetDidDismiss) { sheet in
@@ -42,8 +35,52 @@ struct ContentView: View {
                     Button("OK") { browser.notice = nil }
                 } message: { Text(browser.notice ?? "") }
         }
-        .tint(Color.accentColor)
+        .tint(Color.primary)
         .onAppear { browser.start() }
+    }
+}
+
+@MainActor
+private struct BrowserHeader: View {
+    @ObservedObject var browser: BrowserModel
+
+    private var screenTitle: String {
+        if browser.needsLogin { return "ログイン" }
+        if browser.title == "POS CM CLOUD" || browser.title.contains("メニュー選択") { return "店舗ツール" }
+        return browser.title
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if browser.hasPopups {
+                Button("閉じる", systemImage: "xmark", action: browser.closeTopPopup)
+                    .labelStyle(.iconOnly)
+                    .frame(width: 44, height: 44)
+            } else if browser.canGoBack {
+                Button("戻る", systemImage: "chevron.left", action: browser.back)
+                    .labelStyle(.iconOnly)
+                    .frame(width: 44, height: 44)
+            }
+            Button(action: browser.home) {
+                Text("Y-3").font(.system(size: 23, weight: .black, design: .default))
+                    .tracking(-1)
+                    .frame(minHeight: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("メニューへ戻る")
+            .disabled(!browser.hasSavedConnection)
+            Rectangle().fill(Color.primary.opacity(0.12)).frame(width: 1, height: 20)
+            Text(screenTitle)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 0)
+            BrowserMoreMenu(browser: browser)
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 54)
+        .background(Color(.systemBackground))
+        .overlay(alignment: .bottom) { Divider() }
     }
 }
 
@@ -52,29 +89,23 @@ struct BrowserSurface: View {
     @ObservedObject var browser: BrowserModel
     let webView: WKWebView
 
+    private var resultPanes: [FramePane] { browser.framePanes.filter { $0.kind == .result } }
+    private var showingResult: Bool { resultPanes.contains { $0.id == browser.selectedFramePaneID } }
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 5) {
-                Circle().fill(browser.failure == nil ? Color.accentColor : .orange).frame(width: 5, height: 5)
-                Text(browser.title).lineLimit(1)
-                Spacer(minLength: 8)
-                if browser.loading { Text("読み込み中").font(.caption2) }
-            }
-            .font(.caption).foregroundStyle(.secondary)
-            .padding(.horizontal, 14).padding(.vertical, 9)
-            .background(Color(.secondarySystemBackground))
-            if !browser.framePanes.isEmpty && browser.failure == nil {
+            if resultPanes.count > 1 && showingResult && browser.failure == nil {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        paneButton("全体", selected: browser.selectedFramePaneID == nil) { browser.focusFramePane(nil) }
-                        ForEach(browser.framePanes) { pane in
+                        ForEach(resultPanes) { pane in
                             paneButton(pane.title, selected: browser.selectedFramePaneID == pane.id) { browser.focusFramePane(pane) }
                         }
                     }
-                    .padding(.horizontal, 14).padding(.vertical, 6)
+                    .padding(.horizontal, 14).padding(.vertical, 5)
                 }
-                .background(Color(.secondarySystemBackground))
-                .accessibilityLabel("表示するフレーム")
+                .background(Color(.systemBackground))
+                .overlay(alignment: .bottom) { Divider() }
+                .accessibilityLabel("結果の切替")
             }
             if browser.needsLogin {
                 HStack(spacing: 8) {
@@ -88,6 +119,7 @@ struct BrowserSurface: View {
             }
             ZStack(alignment: .top) {
                 WebView(webView: webView).id(ObjectIdentifier(webView))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .opacity(browser.failure == nil ? 1 : 0)
                     .accessibilityHidden(browser.failure != nil)
                 if browser.failure == nil && !browser.hasSavedConnection && !browser.isResetting
@@ -111,7 +143,10 @@ struct BrowserSurface: View {
                         Button("接続設定") { browser.showSettings = true }
                     }
                 }
-                if browser.loading { ProgressView(value: browser.progress).progressViewStyle(.linear) }
+                if browser.loading {
+                    ProgressView(value: browser.progress).progressViewStyle(.linear)
+                        .accessibilityLabel("読み込み中")
+                }
                 if browser.isResetting {
                     Color(.systemBackground).opacity(0.95)
                     ProgressView("ログイン状態を消去しています…")
@@ -125,8 +160,8 @@ struct BrowserSurface: View {
         Button(action: action) {
             Text(title).font(.footnote.weight(.semibold))
                 .padding(.horizontal, 12).frame(minHeight: 44)
-                .foregroundStyle(selected ? Color.white : Color.accentColor)
-                .background(selected ? Color.accentColor : Color(.tertiarySystemBackground), in: Capsule())
+                .foregroundStyle(selected ? Color(.systemBackground) : Color.primary)
+                .background(selected ? Color.primary : Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 9))
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -137,16 +172,68 @@ struct BrowserSurface: View {
 struct BrowserControls: View {
     @ObservedObject var browser: BrowserModel
 
+    private var selectedPane: FramePane? { browser.framePanes.first { $0.id == browser.selectedFramePaneID } }
+    private var hasConditions: Bool { browser.framePanes.contains { $0.kind == .condition } }
+    private var hasResults: Bool { browser.framePanes.contains { $0.kind == .result } }
+    private var exportPane: FramePane? { browser.framePanes.first { $0.kind == .export } }
+
     var body: some View {
-        Button("戻る", systemImage: "chevron.left", action: browser.back).disabled(!browser.canGoBack)
-        Spacer()
-        Button("進む", systemImage: "chevron.right", action: browser.forward).disabled(!browser.canGoForward)
-        Spacer()
-        Button("更新", systemImage: "arrow.clockwise", action: browser.reload)
-        Spacer()
-        Button("ホーム", systemImage: "house", action: browser.home)
-        Spacer()
+        HStack(spacing: 0) {
+            action("メニュー", symbol: "square.grid.2x2", selected: false, action: browser.home)
+            if hasConditions {
+                action("検索条件", symbol: "slider.horizontal.3", selected: selectedPane?.kind == .condition,
+                       action: browser.focusConditions)
+            }
+            if hasResults {
+                action("結果", symbol: "list.bullet.rectangle", selected: selectedPane?.kind == .result,
+                       action: browser.focusResults)
+            } else if let exportPane {
+                action("書き出し", symbol: "square.and.arrow.up", selected: selectedPane?.kind == .export) {
+                    browser.focusFramePane(exportPane)
+                }
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(Color(.systemBackground))
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    private func action(_ title: String, symbol: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: symbol).font(.system(size: 17, weight: selected ? .semibold : .regular))
+                Text(title).font(.caption.weight(selected ? .semibold : .regular))
+            }
+            .foregroundStyle(selected ? Color.primary : Color.secondary)
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .background(selected ? Color(.secondarySystemBackground) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+@MainActor
+private struct BrowserMoreMenu: View {
+    @ObservedObject var browser: BrowserModel
+
+    var body: some View {
         Menu {
+            if !browser.framePanes.isEmpty {
+                Section("表示") {
+                    Button("全体を表示", systemImage: "rectangle.split.2x2") { browser.focusFramePane(nil) }
+                    ForEach(browser.framePanes) { pane in
+                        Button(pane.title) { browser.focusFramePane(pane) }
+                    }
+                }
+            }
+            Section("操作") {
+                Button("メニューへ戻る", systemImage: "square.grid.2x2", action: browser.home)
+                Button("戻る", systemImage: "chevron.left", action: browser.back).disabled(!browser.canGoBack)
+                Button("進む", systemImage: "chevron.right", action: browser.forward).disabled(!browser.canGoForward)
+                Button("更新", systemImage: "arrow.clockwise", action: browser.reload)
+            }
             Button("ログイン画面", systemImage: "person.crop.circle", action: browser.login)
             Button("AirPrintで印刷", systemImage: "printer", action: browser.printPage)
                 .disabled(browser.needsLogin || browser.failure != nil)
@@ -154,8 +241,13 @@ struct BrowserControls: View {
             Divider()
             Button("接続設定", systemImage: "slider.horizontal.3") { browser.showSettings = true }
             Button("ログイン状態をリセット", systemImage: "arrow.counterclockwise", role: .destructive) { browser.showResetConfirmation = true }
-        } label: { Image(systemName: "ellipsis.circle").accessibilityLabel("メニュー") }
+        } label: {
+            Image(systemName: "ellipsis").font(.system(size: 20, weight: .semibold))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
         .labelStyle(.iconOnly)
+        .accessibilityLabel("その他の操作")
     }
 }
 

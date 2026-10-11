@@ -70,8 +70,16 @@ final class BrowserModel: NSObject, ObservableObject {
     private var frameDiscoveryTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
     private var framePaneEpochs: [ObjectIdentifier: Int] = [:]
     private var frameFocusRevisions: [ObjectIdentifier: Int] = [:]
+    private var initialFrameFocusApplied: Set<ObjectIdentifier> = []
+    private var observedSearchSubmissions: [ObjectIdentifier: Int] = [:]
+    private var pendingResultFocus: [ObjectIdentifier: PendingResultFocus] = [:]
     private var dialogs: [QueuedDialog] = []
     private var presentingDialog: QueuedDialog?
+
+    private struct PendingResultFocus {
+        let submission: Int
+        let focusRevision: Int
+    }
 
     var activeWebView: WKWebView { popups.last?.webView ?? webView }
     var hasPopups: Bool { !popups.isEmpty }
@@ -99,6 +107,10 @@ final class BrowserModel: NSObject, ObservableObject {
         let controller = view.configuration.userContentController
         if !controller.userScripts.contains(where: { $0.source == LegacySiteSupport.viewportAndTouch }) {
             controller.addUserScript(WKUserScript(source: LegacySiteSupport.viewportAndTouch,
+                injectionTime: .atDocumentEnd, forMainFrameOnly: false))
+        }
+        if !controller.userScripts.contains(where: { $0.source == LegacySiteSupport.mobileRedesign }) {
+            controller.addUserScript(WKUserScript(source: LegacySiteSupport.mobileRedesign,
                 injectionTime: .atDocumentEnd, forMainFrameOnly: false))
         }
         view.navigationDelegate = self
@@ -365,6 +377,9 @@ final class BrowserModel: NSObject, ObservableObject {
         frameDiscoveryTasks.removeValue(forKey: id)?.cancel()
         paneLists.removeValue(forKey: id)
         focusedPanePaths.removeValue(forKey: id)
+        initialFrameFocusApplied.remove(id)
+        observedSearchSubmissions.removeValue(forKey: id)
+        pendingResultFocus.removeValue(forKey: id)
         framePaneEpochs[id] = (framePaneEpochs[id] ?? 0) + 1
         frameFocusRevisions[id] = (frameFocusRevisions[id] ?? 0) + 1
         if view === activeWebView { framePanes = []; selectedFramePaneID = nil }
@@ -388,36 +403,82 @@ final class BrowserModel: NSObject, ObservableObject {
     private func discoverFramePanes(in view: WKWebView) {
         let id = ObjectIdentifier(view)
         let epoch = framePaneEpochs[id] ?? 0
-        view.evaluateJavaScript(LegacySiteSupport.discoverFrames) { [weak self, weak view] result, error in
+        let focusRevision = frameFocusRevisions[id] ?? 0
+        // Read the structural panes and search counters together. Neither script returns site data.
+        let script = "(() => { const panes = " + LegacySiteSupport.discoverFrames
+            + "\n const state = " + LegacySiteSupport.navigationState
+            + "\n return { panes, state }; })()"
+        view.evaluateJavaScript(script) { [weak self, weak view] result, error in
             Task { @MainActor [weak self, weak view] in
                 guard let self, let view, !self.isResetting,
                       let url = view.url, URLPolicy.isTrusted(url), error == nil,
                       (self.framePaneEpochs[id] ?? 0) == epoch else { return }
-                let records = result as? [[String: Any]] ?? []
+                let snapshot = result as? [String: Any] ?? [:]
+                let records = snapshot["panes"] as? [[String: Any]] ?? []
                 var resultIndex = 0
                 var panes: [FramePane] = []
                 for record in records.prefix(12) {
                     guard let path = record["path"] as? [Int], !path.isEmpty, path.count <= 8,
-                          path.allSatisfy({ (0 ..< 64).contains($0) }), let kind = record["kind"] as? String else { continue }
+                          path.allSatisfy({ (0 ..< 64).contains($0) }), let rawKind = record["kind"] as? String,
+                          let kind = FramePane.Kind(rawValue: rawKind) else { continue }
                     let label: String
                     switch kind {
-                    case "condition": label = "検索条件"
-                    case "controls": label = "操作"
-                    case "navigation": label = "ナビ"
-                    case "export": label = "エクスポート"
-                    case "result": resultIndex += 1; label = "結果\(resultIndex)"
-                    default: continue
+                    case .condition: label = "検索条件"
+                    case .controls: label = "操作"
+                    case .navigation: label = "ナビ"
+                    case .export: label = "エクスポート"
+                    case .result: resultIndex += 1; label = "結果\(resultIndex)"
                     }
-                    panes.append(FramePane(path: path, title: label))
+                    let publicTitle = record["title"] as? String
+                    let title = publicTitle.flatMap { !$0.isEmpty && $0.count <= 40 ? $0 : nil } ?? label
+                    panes.append(FramePane(path: path, title: title, kind: kind))
                 }
-                let id = ObjectIdentifier(view)
                 self.paneLists[id] = panes
+                let focusUnchanged = (self.frameFocusRevisions[id] ?? 0) == focusRevision
+                let state = snapshot["state"] as? [String: Any] ?? [:]
+                let submission = state["submissionRevision"] as? Int ?? 0
+                let readySubmission = state["resultSubmissionRevision"] as? Int ?? 0
+                if submission > (self.observedSearchSubmissions[id] ?? 0), submission <= Int(Int32.max) {
+                    self.observedSearchSubmissions[id] = submission
+                    // An explicit pane choice made while discovery ran takes precedence.
+                    if focusUnchanged {
+                        self.pendingResultFocus[id] = PendingResultFocus(submission: submission, focusRevision: focusRevision)
+                    } else {
+                        self.pendingResultFocus.removeValue(forKey: id)
+                    }
+                }
+                guard focusUnchanged else { self.refreshState(); return }
+                if let pending = self.pendingResultFocus[id] {
+                    if pending.focusRevision != focusRevision {
+                        self.pendingResultFocus.removeValue(forKey: id)
+                    } else if readySubmission >= pending.submission, readySubmission <= Int(Int32.max),
+                              let resultPane = panes.first(where: { $0.kind == .result }) {
+                        self.pendingResultFocus.removeValue(forKey: id)
+                        self.applyFrameFocus(resultPane, in: view, automatic: true, searchSubmission: pending.submission)
+                        return
+                    }
+                }
+                if !self.initialFrameFocusApplied.contains(id),
+                   let firstPane = panes.first(where: { $0.kind == .condition })
+                    ?? panes.first(where: { $0.kind == .result || $0.kind == .export }) {
+                    let pendingSubmission = self.pendingResultFocus[id]?.submission
+                    self.applyFrameFocus(firstPane, in: view, automatic: true)
+                    if let pendingSubmission {
+                        self.pendingResultFocus[id] = PendingResultFocus(submission: pendingSubmission,
+                            focusRevision: self.frameFocusRevisions[id] ?? 0)
+                    }
+                    return
+                }
                 if let path = self.focusedPanePaths[id] {
                     if panes.contains(where: { $0.path == path }) {
                         view.evaluateJavaScript(LegacySiteSupport.focusScript(path: path), completionHandler: nil)
                     } else {
                         self.focusedPanePaths.removeValue(forKey: id)
                         self.frameFocusRevisions[id] = (self.frameFocusRevisions[id] ?? 0) + 1
+                        if let pending = self.pendingResultFocus[id] {
+                            self.pendingResultFocus[id] = PendingResultFocus(submission: pending.submission,
+                                focusRevision: self.frameFocusRevisions[id] ?? 0)
+                        }
                         view.evaluateJavaScript(LegacySiteSupport.focusScript(path: nil), completionHandler: nil)
                     }
                 }
@@ -431,12 +492,30 @@ final class BrowserModel: NSObject, ObservableObject {
         let view = activeWebView
         guard let url = view.url, URLPolicy.isTrusted(url),
               pane == nil || framePanes.contains(where: { $0.id == pane?.id }) else { return }
+        pendingResultFocus.removeValue(forKey: ObjectIdentifier(view))
+        applyFrameFocus(pane, in: view, automatic: false)
+    }
+
+    func focusConditions() {
+        guard let pane = framePanes.first(where: { $0.kind == .condition }) else { return }
+        focusFramePane(pane)
+    }
+
+    func focusResults() {
+        guard let pane = framePanes.first(where: { $0.kind == .result })
+            ?? framePanes.first(where: { $0.kind == .export }) else { return }
+        focusFramePane(pane)
+    }
+
+    private func applyFrameFocus(_ pane: FramePane?, in view: WKWebView, automatic: Bool, searchSubmission: Int? = nil) {
         let path = pane?.path
         let id = ObjectIdentifier(view)
         let epoch = framePaneEpochs[id] ?? 0
         let previousPath = focusedPanePaths[id]
+        let previouslyApplied = initialFrameFocusApplied.contains(id)
         let revision = (frameFocusRevisions[id] ?? 0) + 1
         frameFocusRevisions[id] = revision
+        initialFrameFocusApplied.insert(id)
         // Store the requested focus before discovery can enqueue a competing script.
         if let path { focusedPanePaths[id] = path }
         else { focusedPanePaths.removeValue(forKey: id) }
@@ -449,6 +528,11 @@ final class BrowserModel: NSObject, ObservableObject {
                 if error != nil || (result as? Bool) != true {
                     if let previousPath { self.focusedPanePaths[id] = previousPath }
                     else { self.focusedPanePaths.removeValue(forKey: id) }
+                    if automatic && !previouslyApplied { self.initialFrameFocusApplied.remove(id) }
+                    if automatic, let searchSubmission,
+                       self.observedSearchSubmissions[id] == searchSubmission {
+                        self.pendingResultFocus[id] = PendingResultFocus(submission: searchSubmission, focusRevision: revision)
+                    }
                 }
                 self.refreshState()
             }
@@ -625,6 +709,11 @@ extension BrowserModel: WKNavigationDelegate {
             String($0).trimmingCharacters(in: .whitespaces).lowercased()
         } == "attachment"
         decisionHandler(attachment || !navigationResponse.canShowMIMEType ? .download : .allow)
+        if !navigationResponse.isForMainFrame, !attachment, navigationResponse.canShowMIMEType,
+           let url = navigationResponse.response.url, URLPolicy.isTrusted(url) {
+            // A result-frame response can arrive well after its request. Discover once it is ready.
+            scheduleFrameDiscovery(in: webView)
+        }
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
