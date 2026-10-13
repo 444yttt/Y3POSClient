@@ -1,0 +1,7 @@
+name: Scoped BeReal Apple ID provisioning
+description: Create only authorized BeReal profiles using a temporary encrypted Apple authentication relay.
+runs:
+  using: node24
+  main: entry.cjs
+  post: cleanup.cjs
+  post-if: always()
