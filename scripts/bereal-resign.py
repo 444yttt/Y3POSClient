@@ -19,6 +19,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 import zipfile
@@ -28,6 +30,9 @@ SOURCE_COMMIT = '1f749cd1b2433d2a32694d5c91849d22f84f429f'
 ROOT_ID = 'com.ayato.bereal493'
 PREFIX = 'AlexisBarreyat.BeReal'
 SAFE_SUFFIXES = ('', '.iMessageExtension', '.RealMojiNotificationContentExtension', '.NotificationServiceExtension', '.Widgets')
+# Exact direct-download hosts; the encrypted URL may narrow this set further.
+URL_INPUT_ALLOWED_HOSTS = ('cvws.icloud-content.com', '*.icloud-content.com')
+URL_INPUT_HMAC_DOMAIN = b'BeReal493EncryptedURLInputV2'
 
 helper = None
 
@@ -91,6 +96,47 @@ def download(url, path):
         raise RuntimeError('HTTPS input is required')
     with urllib.request.urlopen(url, timeout=120) as response, path.open('wb') as target:
         while chunk := response.read(1048576): target.write(chunk)
+
+
+def validate_url_input(url, allowed_hosts):
+    def permitted_scope(host):
+        return isinstance(host, str) and (host in URL_INPUT_ALLOWED_HOSTS or re.fullmatch(r'[a-z0-9.-]+\.icloud-content\.com', host))
+    if not isinstance(allowed_hosts, list) or not allowed_hosts or any(not permitted_scope(host) for host in allowed_hosts):
+        raise RuntimeError('Unapproved encrypted URL input host scope')
+    if not isinstance(url, str) or len(url) > 16384 or any(ord(char) < 32 for char in url):
+        raise RuntimeError('Invalid encrypted URL input')
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        hostname = parsed.hostname or ''
+        allowed = hostname in allowed_hosts or ('*.icloud-content.com' in allowed_hosts and bool(re.fullmatch(r'[a-z0-9.-]+\.icloud-content\.com', hostname)))
+        valid = parsed.scheme == 'https' and allowed and parsed.port in (None, 443) and parsed.username is None and parsed.password is None and not parsed.fragment
+    except ValueError:
+        valid = False
+    if not valid: raise RuntimeError('Encrypted URL input requires an authorized HTTPS host')
+
+
+class ScopedInputRedirects(urllib.request.HTTPRedirectHandler):
+    def __init__(self, allowed_hosts):
+        self.allowed_hosts = allowed_hosts
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        validate_url_input(newurl, self.allowed_hosts)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def download_url_input(url, path, allowed_hosts):
+    validate_url_input(url, allowed_hosts)
+    opener = urllib.request.build_opener(ScopedInputRedirects(allowed_hosts))
+    try:
+        with opener.open(url, timeout=120) as response, path.open('wb') as target:
+            validate_url_input(response.geturl(), allowed_hosts)
+            while chunk := response.read(1048576): target.write(chunk)
+    except urllib.error.HTTPError as error:
+        # The signed URL is a temporary access credential: never emit the URL,
+        # HTTP error text, body or request/response headers in CI diagnostics.
+        raise RuntimeError('Encrypted URL input download failed (HTTP ' + str(error.code) + ')') from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise RuntimeError('Encrypted URL input download could not complete') from None
 
 
 def extract(source, root):
@@ -162,16 +208,44 @@ def signing_readiness(api, der):
     return matches[0], devices[0]
 
 
-def decrypt_input(root, key, envelope):
-    if envelope.get('version') != 1 or envelope.get('input_sha256') != ORIGINAL_SHA or envelope.get('source_commit') != SOURCE_COMMIT:
-        raise RuntimeError('Unexpected encrypted input contract')
-    commit = envelope.get('transfer_commit', '')
-    if not re.fullmatch('[0-9a-f]{40}', commit): raise RuntimeError('Pinned transfer commit is required')
+def unwrap_input_keys(root, key, envelope):
     wrapped = private(root / 'wrapped-keys.bin', base64.b64decode(envelope['wrapped_keys'], validate=True))
+    if not 128 <= wrapped.stat().st_size <= 1024: raise RuntimeError('Invalid wrapped transfer key')
     keys = run(['openssl', 'pkeyutl', '-decrypt', '-inkey', str(key), '-in', str(wrapped), '-pkeyopt', 'rsa_padding_mode:oaep', '-pkeyopt', 'rsa_oaep_md:sha256', '-pkeyopt', 'rsa_mgf1_md:sha256'])
     if len(keys) != 64: raise RuntimeError('Invalid decrypted transfer key')
     iv = base64.b64decode(envelope['iv'], validate=True)
     if len(iv) != 16: raise RuntimeError('Invalid IV')
+    return keys, iv
+
+
+def decrypt_url_input(root, key, envelope):
+    if envelope.get('mode') != 'encrypted-https-url': raise RuntimeError('Unexpected encrypted URL input mode')
+    keys, iv = unwrap_input_keys(root, key, envelope)
+    ciphertext = base64.b64decode(envelope['encrypted_url'], validate=True)
+    if not ciphertext or len(ciphertext) > 65536 or len(ciphertext) % 16: raise RuntimeError('Invalid encrypted URL payload')
+    tag = hmac.new(keys[32:], URL_INPUT_HMAC_DOMAIN + iv + ciphertext, hashlib.sha256).digest()
+    if not hmac.compare_digest(tag, base64.b64decode(envelope['hmac'], validate=True)):
+        raise RuntimeError('Encrypted URL input authentication failed')
+    plaintext = run(['openssl', 'enc', '-d', '-aes-256-cbc', '-K', keys[:32].hex(), '-iv', iv.hex()], ciphertext)
+    payload = json.loads(plaintext)
+    url, allowed_hosts = payload['url'], payload['allowed_hosts']
+    validate_url_input(url, allowed_hosts)
+    original = root / 'original.ipa'
+    download_url_input(url, original, allowed_hosts)
+    if sha256_file(original) != ORIGINAL_SHA: raise RuntimeError('Original IPA hash mismatch')
+    print('Encrypted access URL restored; original IPA downloaded and its exact hash verified.')
+    return original
+
+
+def decrypt_input(root, key, envelope):
+    if envelope.get('input_sha256') != ORIGINAL_SHA or envelope.get('source_commit') != SOURCE_COMMIT:
+        raise RuntimeError('Unexpected encrypted input contract')
+    if envelope.get('version') == 2: return decrypt_url_input(root, key, envelope)
+    if envelope.get('version') == 3: return decrypt_local_input(root, key, envelope)
+    if envelope.get('version') != 1: raise RuntimeError('Unexpected encrypted input version')
+    commit = envelope.get('transfer_commit', '')
+    if not re.fullmatch('[0-9a-f]{40}', commit): raise RuntimeError('Pinned transfer commit is required')
+    keys, iv = unwrap_input_keys(root, key, envelope)
     authenticator = hmac.new(keys[32:], b'BeReal493EncryptedInputV1' + iv, hashlib.sha256)
     encrypted = root / 'input-encrypted.bin'
     with encrypted.open('wb') as output:
@@ -191,6 +265,46 @@ def decrypt_input(root, key, envelope):
     if sha256_file(original) != ORIGINAL_SHA: raise RuntimeError('Original IPA hash mismatch')
     print('Encrypted original IPA restored and its exact hash verified.')
     return original
+
+
+def decrypt_local_input(root, key, envelope):
+    if envelope.get('mode') != 'encrypted-local-file' or envelope.get('encrypted_file') != 'input-encrypted.bin':
+        raise RuntimeError('Unexpected persistent encrypted input contract')
+    encrypted = Path('bereal-input-transfer') / 'input-encrypted.bin'
+    if encrypted.is_symlink() or not encrypted.is_file() or encrypted.stat().st_size != envelope.get('encrypted_bytes') or sha256_file(encrypted) != envelope.get('encrypted_sha256'):
+        raise RuntimeError('Persistent encrypted input is missing or failed verification')
+    keys, iv = unwrap_input_keys(root, key, envelope)
+    authenticator = hmac.new(keys[32:], b'BeReal493EncryptedInputV1' + iv, hashlib.sha256)
+    with encrypted.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1048576), b''): authenticator.update(chunk)
+    if not hmac.compare_digest(authenticator.digest(), base64.b64decode(envelope['hmac'], validate=True)):
+        raise RuntimeError('Persistent encrypted input authentication failed')
+    original = root / 'original.ipa'
+    run(['openssl', 'enc', '-d', '-aes-256-cbc', '-K', keys[:32].hex(), '-iv', iv.hex(), '-in', str(encrypted), '-out', str(original)])
+    if sha256_file(original) != ORIGINAL_SHA: raise RuntimeError('Original IPA hash mismatch')
+    print('Persistent encrypted original IPA restored and its exact hash verified.')
+    return original
+
+
+def encrypt_persistent_input(root, original, der):
+    output = Path('bereal-input-transfer'); output.mkdir(exist_ok=True)
+    encrypted = output / 'input-encrypted.bin'
+    keys, iv = secrets.token_bytes(64), secrets.token_bytes(16)
+    public_key = private(root / 'input-recipient-public.pem', run(['openssl', 'x509', '-inform', 'DER', '-pubkey', '-noout'], der))
+    wrapped = run(['openssl', 'pkeyutl', '-encrypt', '-pubin', '-inkey', str(public_key), '-pkeyopt', 'rsa_padding_mode:oaep', '-pkeyopt', 'rsa_oaep_md:sha256', '-pkeyopt', 'rsa_mgf1_md:sha256'], keys)
+    run(['openssl', 'enc', '-aes-256-cbc', '-K', keys[:32].hex(), '-iv', iv.hex(), '-in', str(original), '-out', str(encrypted)])
+    authenticator = hmac.new(keys[32:], b'BeReal493EncryptedInputV1' + iv, hashlib.sha256)
+    with encrypted.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1048576), b''): authenticator.update(chunk)
+    encode = lambda value: base64.b64encode(value).decode('ascii')
+    metadata = {'version': 3, 'mode': 'encrypted-local-file', 'input_sha256': ORIGINAL_SHA,
+                'source_commit': SOURCE_COMMIT, 'encrypted_file': encrypted.name,
+                'encrypted_bytes': encrypted.stat().st_size, 'encrypted_sha256': sha256_file(encrypted),
+                'certificate_sha256': hashlib.sha256(der).hexdigest(),
+                'wrapped_keys': encode(wrapped), 'iv': encode(iv), 'hmac': encode(authenticator.digest())}
+    (output / 'input-metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
+    print('Exact original input encrypted with a fresh envelope for persistent CI transfer.')
+    return metadata
 
 
 def validate_profile(resource, der, team, identifier, udid):
@@ -420,12 +534,44 @@ def build_adapter(root, original):
     return payload
 
 
+def encrypt_delivery(root, files, output):
+    delivery = root / 'delivery.zip'
+    with zipfile.ZipFile(delivery, 'w', compression=zipfile.ZIP_STORED) as archive:
+        for path in files: archive.write(path, path.name)
+    output.parent.mkdir(exist_ok=True)
+    run(['openssl', 'cms', '-encrypt', '-aes-256-gcm', '-binary', '-in', str(delivery), '-outform', 'DER', '-out', str(output), 'delivery-recipient.pem'])
+
+
+def prepare_input(root, original, der):
+    # Persist the recovered input before compilation, so a toolchain failure
+    # cannot force another download from an expiring access URL.
+    encrypt_persistent_input(root, original, der)
+    payload = build_adapter(root, original)
+    unsigned = root / 'unsigned.ipa'
+    unsigned.rename(root / 'BeReal493-CameraRoll-UNSIGNED.ipa')
+    unsigned = root / 'BeReal493-CameraRoll-UNSIGNED.ipa'
+    source = root / 'source' / ('BeReal493-' + SOURCE_COMMIT)
+    inspection = json.loads(run([sys.executable, str(source / 'scripts/inspect_ipa.py'), str(unsigned)]))
+    verification = {'file': unsigned.name, 'sha256': sha256_file(unsigned),
+                    'input_sha256': ORIGINAL_SHA, 'source_commit': SOURCE_COMMIT,
+                    'certificate_sha256': hashlib.sha256(der).hexdigest(),
+                    'adapter': 'implemented; rebuilt from pinned source; not device tested',
+                    'archive_inspection': inspection, 'signature': 'unsigned',
+                    'apple_resources_created_or_modified': False,
+                    'device_installation': 'not tested', 'posting': 'not tested'}
+    receipt = private(root / 'unsigned-verification.json', (json.dumps(verification, indent=2) + '\n').encode())
+    encrypt_delivery(root, [unsigned, receipt], Path('bereal-output/BeReal493-unsigned-delivery.cms'))
+    print('Pinned adapter rebuilt and unsigned IPA encrypted for structural review. SHA256: ' + verification['sha256'])
+    print('No Apple resources were created or modified. No signed IPA was created.')
+
+
 def main(argv=None):
     global helper
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--prepare-profiles', action='store_true', help='Provision the scoped Ad Hoc bundles without input IPA or signing output')
     modes.add_argument('--probe-existing-profiles', action='store_true', help='Read-only scan of existing profiles for scoped exact/wildcard Ad Hoc coverage')
+    modes.add_argument('--prepare-input', action='store_true', help='Recover and persist encrypted input, rebuild adapter, and encrypt unsigned IPA without provisioning or signing')
     options = parser.parse_args(argv)
     if os.environ.get('GITHUB_REPOSITORY') != '444yttt/Y3POSClient' or os.environ.get('GITHUB_REF') != 'refs/heads/main':
         raise RuntimeError('This job may only use the authorized main repository scope')
@@ -446,6 +592,9 @@ def main(argv=None):
             prepare_profiles(root, der, api, certificate, device)
             return
         original = decrypt_input(root, key, envelope)
+        if options.prepare_input:
+            prepare_input(root, original, der)
+            return
         payload = build_adapter(root, original)
         app = payload / 'Payload/BeReal.app'
         bundles = [app] + sorted((app / 'PlugIns').glob('*.appex'))
@@ -518,11 +667,7 @@ def main(argv=None):
         digest = sha256_file(ipa)
         verification = {'file':ipa.name,'sha256':digest,'source_commit':SOURCE_COMMIT,'input_sha256':ORIGINAL_SHA,'bundle_identifier':ROOT_ID,'distribution':'IOS_APP_ADHOC','registered_device_count':1,'provisioned_bundle_count':len(targets),'signed_macho_count':macho_count,'certificate_sha256':hashlib.sha256(der).hexdigest(),'profiles':[public_profile_receipt(info['CFBundleIdentifier'],profile,der) for bundle,info,profile,ent in targets],'signature_verification':'codesign deep strict passed; each app/extension matched concrete profile entitlements and the approved certificate','device_installation':'not tested','posting':'not tested'}
         receipt = private(root / 'verification.json', (json.dumps(verification,indent=2)+'\n').encode())
-        delivery = root / 'delivery.zip'
-        with zipfile.ZipFile(delivery,'w',compression=zipfile.ZIP_STORED) as archive:
-            archive.write(ipa,ipa.name); archive.write(receipt,receipt.name)
-        output = Path('bereal-output'); output.mkdir(exist_ok=True)
-        run(['openssl','cms','-encrypt','-aes-256-gcm','-binary','-in',str(delivery),'-outform','DER','-out',str(output/'BeReal493-signed-delivery.cms'),'delivery-recipient.pem'])
+        encrypt_delivery(root, [ipa, receipt], Path('bereal-output/BeReal493-signed-delivery.cms'))
         print('Signed IPA verified and encrypted for the recipient. SHA256: ' + digest)
         print('No device installation or posting test was performed.')
 
