@@ -8,6 +8,7 @@ changing the production signer.
 """
 import base64
 import collections
+import datetime
 import hashlib
 import importlib.util
 import json
@@ -126,6 +127,123 @@ def inspect_alternate_certificate(signer, root, api):
     except Exception as exc:
         result["safe_failure"] = safe_failure(exc)
         return None, result
+
+
+def certificate_public_key(signer, der):
+    public_pem = signer.run(["openssl", "x509", "-inform", "DER", "-pubkey", "-noout"], der)
+    return signer.run(["openssl", "pkey", "-pubin", "-outform", "DER"], public_pem)
+
+
+def certificate_current_validity(signer, der):
+    dates = signer.run(["openssl", "x509", "-inform", "DER", "-noout", "-startdate", "-enddate"], der).decode()
+    parsed = {}
+    for line in dates.splitlines():
+        name, value = line.split("=", 1)
+        parsed[name] = datetime.datetime.strptime(value.strip(), "%b %d %H:%M:%S %Y %Z").replace(tzinfo=datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return parsed["notBefore"] <= now < parsed["notAfter"]
+
+
+def probe_scoped_profile_public_keys(signer, api, primary_der, device):
+    """Can an existing profile leaf legitimately reuse the current CI key?
+
+    Inspect only public certificates from an active scoped wildcard profile.
+    A matching SPKI alone is insufficient: the leaf must also be current,
+    same-team, an active Apple API distribution identity, and permit all five
+    scoped bundles with exactly the one current device and concrete grants.
+    """
+    primary_key = certificate_public_key(signer, primary_der)
+    targets = {signer.ROOT_ID + suffix for suffix in signer.SAFE_SUFFIXES}
+    counts = collections.Counter()
+    unique_candidates = {}
+    catalog = []
+    for resource in api.collection("/v1/certificates"):
+        attributes = resource.get("attributes", {})
+        if attributes.get("certificateContent"):
+            try:
+                catalog.append((signer.helper.decode_base64(attributes["certificateContent"]), attributes))
+            except (ValueError, TypeError):
+                counts["apple_certificate_catalog_decode_rejection_count"] += 1
+    resources = api.collection("/v1/profiles", {
+        "fields[profiles]": "uuid,profileType,profileState,profileContent,expirationDate"})
+    for resource in resources:
+        attributes = resource.get("attributes", {})
+        if attributes.get("profileType") != "IOS_APP_ADHOC" or attributes.get("profileState") != "ACTIVE":
+            continue
+        try:
+            if not attributes.get("profileContent"):
+                resource = api.request("GET", "/v1/profiles/" + resource["id"])["data"]
+                attributes = resource.get("attributes", {})
+            raw = signer.helper.decode_base64(attributes.get("profileContent", ""))
+            if not raw or len(raw) > 10 * 1024 * 1024:
+                raise RuntimeError("Invalid profile content")
+            profile = plistlib.loads(signer.run([
+                "openssl", "cms", "-verify", "-inform", "DER", "-noverify"], raw))
+            application_id = profile.get("Entitlements", {}).get("application-identifier", "")
+            if not isinstance(application_id, str) or "." not in application_id:
+                continue
+            grant = application_id.split(".", 1)[1]
+            if "*" not in grant or not all(signer.apple_identifier_grant_matches(grant, target) for target in targets):
+                continue
+            counts["scoped_wildcard_all_targets_profile_count"] += 1
+            certificates = profile.get("DeveloperCertificates", [])
+            if not isinstance(certificates, list):
+                raise RuntimeError("Invalid public certificate list")
+            for candidate_der in certificates:
+                if not isinstance(candidate_der, bytes):
+                    counts["profile_certificate_structure_rejection_count"] += 1
+                    continue
+                fingerprint = hashlib.sha256(candidate_der).digest()
+                record = unique_candidates.setdefault(fingerprint, {
+                    "der": candidate_der, "profile_all_targets_current_device_only": False})
+                result = profile_analysis(signer, resource, candidate_der,
+                                          os.environ["APPLE_TEAM_ID"], device["attributes"]["udid"])
+                if result["compatible_with_current_device_only"] and set(result["concrete_targets"]) == targets:
+                    record["profile_all_targets_current_device_only"] = True
+        except Exception:
+            counts["profile_decode_or_analysis_rejection_count"] += 1
+    counts["unique_scoped_profile_certificate_count"] = len(unique_candidates)
+    for record in unique_candidates.values():
+        der = record["der"]
+        try:
+            key_matches = certificate_public_key(signer, der) == primary_key
+            current = certificate_current_validity(signer, der)
+            subject = signer.run(["openssl", "x509", "-inform", "DER", "-noout",
+                                  "-subject", "-nameopt", "RFC2253"], der).decode()
+            team_matches = os.environ["APPLE_TEAM_ID"] in re.findall(
+                r"(?:^|,)OU=([A-Z0-9]{10})(?=,|$)", re.sub(r"^subject\s*=\s*", "", subject.strip()))
+            matches = [attributes for candidate, attributes in catalog if candidate == der]
+            api_valid = (len(matches) == 1
+                         and matches[0].get("certificateType") in ("IOS_DISTRIBUTION", "DISTRIBUTION")
+                         and signer.helper.is_future(matches[0].get("expirationDate")))
+            checks = {"primary_public_key_matches": key_matches,
+                      "certificate_current_validity": current,
+                      "certificate_team_matches": team_matches,
+                      "apple_active_distribution_certificate_matches": api_valid,
+                      "profile_all_targets_current_device_only": record["profile_all_targets_current_device_only"]}
+            for name, value in checks.items():
+                counts[name + ("_pass_count" if value else "_failure_count")] += 1
+            if not matches:
+                counts["certificate_missing_from_current_apple_catalog_count"] += 1
+            if len(matches) > 1:
+                counts["ambiguous_apple_certificate_match_count"] += 1
+            if all(checks.values()):
+                counts["valid_scoped_profile_certificate_matching_primary_public_key_count"] += 1
+        except Exception:
+            counts["profile_public_certificate_decode_rejection_count"] += 1
+    keys = ["apple_certificate_catalog_decode_rejection_count", "scoped_wildcard_all_targets_profile_count",
+            "profile_certificate_structure_rejection_count", "profile_decode_or_analysis_rejection_count",
+            "unique_scoped_profile_certificate_count", "certificate_missing_from_current_apple_catalog_count",
+            "ambiguous_apple_certificate_match_count", "profile_public_certificate_decode_rejection_count",
+            "valid_scoped_profile_certificate_matching_primary_public_key_count"]
+    for check in ("primary_public_key_matches", "certificate_current_validity", "certificate_team_matches",
+                  "apple_active_distribution_certificate_matches", "profile_all_targets_current_device_only"):
+        keys.extend([check + "_pass_count", check + "_failure_count"])
+    return {"mode": "public_certificate_spki_comparison", "private_key_exported": False,
+            "apple_resources_created_or_modified": False,
+            "primary_ci_key_can_be_rebound_to_valid_existing_scoped_profile_certificate":
+                counts["valid_scoped_profile_certificate_matching_primary_public_key_count"] > 0,
+            "counts": {name: counts[name] for name in keys}}
 
 
 def profile_analysis(signer, resource, der, team, udid):
@@ -322,7 +440,9 @@ def main():
         else:
             alternate["fits_existing_wildcard_profile_for_all_five_targets_and_only_current_device"] = False
         receipt["alternate_identity"] = alternate
-        receipt["schema_version"] = 2
+        receipt["scoped_profile_certificate_public_key_probe"] = probe_scoped_profile_public_keys(
+            signer, api, der, device)
+        receipt["schema_version"] = 3
     output = Path("bereal-public")
     output.mkdir(exist_ok=True)
     (output / "apple-access-diagnostics.json").write_text(json.dumps(receipt, indent=2) + "\n")
