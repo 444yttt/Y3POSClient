@@ -299,6 +299,113 @@ def prepare_profiles(root, der, api, certificate, device):
     print('Published only the public encryption key and provisioning receipt; no signed IPA was created.')
 
 
+def apple_identifier_grant_matches(grant, identifier):
+    """Apple wildcard identifiers are either '*' or a trailing '.*'."""
+    if not isinstance(grant, str) or not isinstance(identifier, str): return False
+    if '*' not in grant: return grant == identifier
+    if grant == '*': return bool(identifier)
+    if grant.count('*') != 1 or not grant.endswith('.*'): return False
+    return identifier.startswith(grant[:-1]) and len(identifier) > len(grant) - 1
+
+
+def probe_profile_compatibility(resource, der, team, udid):
+    """Read-only analysis; never returns raw profile bytes or device identifiers.
+
+    This deliberately does not change strict exact-App-ID signing validation.
+    Wildcard candidates are entitlement-level evidence for a later explicit
+    implementation and still require real signing/install verification.
+    """
+    attributes = resource.get('attributes', {})
+    if attributes.get('profileType') != 'IOS_APP_ADHOC' or attributes.get('profileState') != 'ACTIVE':
+        raise RuntimeError('Incorrect profile distribution type or state')
+    raw = helper.decode_base64(attributes.get('profileContent', ''))
+    if not raw or len(raw) > 10 * 1024 * 1024: raise RuntimeError('Invalid profile content')
+    profile = plistlib.loads(run(['openssl', 'cms', '-verify', '-inform', 'DER', '-noverify'], raw))
+    grants = profile.get('Entitlements', {})
+    application_id = grants.get('application-identifier', '')
+    if not isinstance(application_id, str) or '.' not in application_id: raise RuntimeError('Profile identity is missing')
+    prefix, identifier_grant = application_id.split('.', 1)
+    if team not in profile.get('TeamIdentifier', []) or prefix not in profile.get('ApplicationIdentifierPrefix', []):
+        raise RuntimeError('Profile team or prefix mismatch')
+    if grants.get('com.apple.developer.team-identifier') != team or grants.get('get-task-allow') is not False:
+        raise RuntimeError('Profile entitlement mismatch')
+    if der not in profile.get('DeveloperCertificates', []) or not helper.is_future(profile.get('ExpirationDate')) or not helper.is_future(attributes.get('expirationDate')):
+        raise RuntimeError('Profile certificate/expiry mismatch')
+    if profile.get('ProvisionedDevices') != [udid] or profile.get('ProvisionsAllDevices'):
+        raise RuntimeError('Profile does not target only the registered device')
+    try: profile_uuid = str(uuid.UUID(profile.get('UUID', '')))
+    except (ValueError, AttributeError, TypeError): raise RuntimeError('Invalid profile UUID') from None
+    if attributes.get('uuid', '').lower() != profile_uuid: raise RuntimeError('Profile UUID differs from Apple metadata')
+    identifiers = []
+    for suffix in SAFE_SUFFIXES:
+        identifier = ROOT_ID + suffix
+        if not apple_identifier_grant_matches(identifier_grant, identifier): continue
+        candidate = plistlib.loads(plistlib.dumps(profile))
+        entitlements = candidate['Entitlements']
+        concrete_application_id = prefix + '.' + identifier
+        entitlements['application-identifier'] = concrete_application_id
+        if 'keychain-access-groups' in entitlements:
+            keychain_grants = entitlements['keychain-access-groups']
+            if not isinstance(keychain_grants, list) or not any(apple_identifier_grant_matches(grant, concrete_application_id) for grant in keychain_grants):
+                continue
+            entitlements['keychain-access-groups'] = [concrete_application_id]
+        try: concrete_entitlements(candidate, identifier)
+        except (RuntimeError, KeyError, TypeError, ValueError): continue
+        identifiers.append(identifier)
+    expiration = profile['ExpirationDate']
+    if expiration.tzinfo is None: expiration = expiration.replace(tzinfo=datetime.timezone.utc)
+    return {'profile_uuid': profile_uuid, 'distribution': 'IOS_APP_ADHOC',
+            'application_identifier_kind': 'wildcard' if '*' in identifier_grant else 'explicit',
+            'compatible_scoped_identifiers': identifiers,
+            'expiration_date': expiration.astimezone(datetime.timezone.utc).isoformat().replace('+00:00', 'Z'),
+            'certificate_sha256': hashlib.sha256(der).hexdigest(),
+            'provisioned_device_count': 1}
+
+
+def probe_existing_profiles(der, api, device):
+    resources = api.collection('/v1/profiles', {
+        'fields[profiles]': 'uuid,profileType,profileState,profileContent,expirationDate'})
+    distribution_types = {}
+    candidates, validated, incompatible = [], 0, 0
+    active_adhoc = 0
+    for resource in resources:
+        attributes = resource.get('attributes', {})
+        distribution = attributes.get('profileType', '')
+        if isinstance(distribution, str) and re.fullmatch('[A-Z_]{1,60}', distribution):
+            distribution_types[distribution] = distribution_types.get(distribution, 0) + 1
+        if distribution != 'IOS_APP_ADHOC' or attributes.get('profileState') != 'ACTIVE': continue
+        active_adhoc += 1
+        # GET failures propagate. This probe never creates replacement assets.
+        if not attributes.get('profileContent'):
+            resource = api.request('GET', '/v1/profiles/' + resource['id'])['data']
+        try:
+            result = probe_profile_compatibility(resource, der, os.environ['APPLE_TEAM_ID'], device['attributes']['udid'])
+        except (RuntimeError, KeyError, ValueError, TypeError):
+            incompatible += 1
+            continue
+        validated += 1
+        if result['compatible_scoped_identifiers']: candidates.append(result)
+    covered = sorted({identifier for candidate in candidates for identifier in candidate['compatible_scoped_identifiers']})
+    receipt = {'mode': 'read_only_existing_profile_probe', 'distribution_certificate_validated': True,
+               'certificate_sha256': hashlib.sha256(der).hexdigest(), 'registered_device_count': 1,
+               'catalog_profile_count': len(resources), 'catalog_distribution_types': distribution_types,
+               'active_ios_adhoc_profile_count': active_adhoc,
+               'validated_cert_team_device_profile_count': validated,
+               'rejected_ios_adhoc_profile_count': incompatible,
+               'compatible_profile_count': len(candidates), 'compatible_profiles': candidates,
+               'covered_scoped_identifiers': covered,
+               'all_five_scoped_identifiers_covered': len(covered) == len(SAFE_SUFFIXES),
+               'compatibility': 'CMS, metadata and concrete-entitlement analysis only; strict signing flow unchanged',
+               'apple_resources_created_or_modified': False, 'signed_ipa_created': False,
+               'device_installation': 'not tested', 'posting': 'not tested'}
+    output = Path('bereal-public'); output.mkdir(exist_ok=True)
+    (output / 'existing-profile-probe.json').write_text(json.dumps(receipt, indent=2) + '\n')
+    (output / 'signing-public-key.pem').write_bytes(run(['openssl', 'x509', '-inform', 'DER', '-pubkey', '-noout'], der))
+    print('Read-only existing-profile probe completed. Compatible Ad Hoc profile count: ' + str(len(candidates)))
+    print('Scoped bundle coverage: ' + str(len(covered)) + '/5. No Apple resources were created or modified.')
+    print('Published only the public encryption key and safe compatibility receipt; no signed IPA was created.')
+
+
 def build_adapter(root, original):
     archive = root / 'source.zip'
     download(f'https://github.com/444yttt/BeReal493/archive/{SOURCE_COMMIT}.zip', archive)
@@ -316,19 +423,25 @@ def build_adapter(root, original):
 def main(argv=None):
     global helper
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--prepare-profiles', action='store_true', help='Provision the scoped Ad Hoc bundles without input IPA or signing output')
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--prepare-profiles', action='store_true', help='Provision the scoped Ad Hoc bundles without input IPA or signing output')
+    modes.add_argument('--probe-existing-profiles', action='store_true', help='Read-only scan of existing profiles for scoped exact/wildcard Ad Hoc coverage')
     options = parser.parse_args(argv)
     if os.environ.get('GITHUB_REPOSITORY') != '444yttt/Y3POSClient' or os.environ.get('GITHUB_REF') != 'refs/heads/main':
         raise RuntimeError('This job may only use the authorized main repository scope')
     if sys.version_info < (3, 11): raise RuntimeError('Python 3.11 or newer is required by the pinned packaging source')
     configure_openssl()
     helper = load_helper()
-    envelope = None if options.prepare_profiles else json.loads(Path('bereal-signing-input.json').read_text())
+    needs_input = not (options.prepare_profiles or options.probe_existing_profiles)
+    envelope = json.loads(Path('bereal-signing-input.json').read_text()) if needs_input else None
     with tempfile.TemporaryDirectory(prefix='bereal-resign-', dir=os.environ['RUNNER_TEMP']) as directory:
         root = Path(directory)
-        p12, der, key, asc = decode_identity(root, need_private_key=not options.prepare_profiles)
+        p12, der, key, asc = decode_identity(root, need_private_key=needs_input)
         api = RefreshingAppleAPI(asc)
         certificate, device = signing_readiness(api, der)
+        if options.probe_existing_profiles:
+            probe_existing_profiles(der, api, device)
+            return
         if options.prepare_profiles:
             prepare_profiles(root, der, api, certificate, device)
             return
