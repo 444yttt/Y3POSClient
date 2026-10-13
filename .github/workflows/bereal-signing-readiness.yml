@@ -25,3 +25,10 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
         run: python3 scripts/bereal-signing-readiness.py
+      - name: Publish only the public encryption key
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: BeReal-signing-public-key
+          path: bereal-public/signing-public-key.pem
+          retention-days: 1
+          if-no-files-found: error

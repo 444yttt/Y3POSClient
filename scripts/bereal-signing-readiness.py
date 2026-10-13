@@ -55,6 +55,10 @@ def main():
         if match is None:
             print("Existing certificate is unavailable in the configured Apple team.")
             return 1
+        public_key = helper.run_openssl(["x509", "-inform", "DER", "-pubkey", "-noout"], der)
+        public_directory = Path("bereal-public")
+        public_directory.mkdir(exist_ok=True)
+        (public_directory / "signing-public-key.pem").write_bytes(public_key)
         print("Existing distribution certificate validated against Apple.")
         devices = api.collection("/v1/devices", {"filter[platform]": "IOS", "filter[status]": "ENABLED"})
         print("Enabled registered iOS device count: " + str(len(devices)))
