@@ -6,6 +6,7 @@ with extra registered devices is reported separately from an exact-device-only
 profile so that a previous strict rejection can be explained without silently
 changing the production signer.
 """
+import base64
 import collections
 import hashlib
 import importlib.util
@@ -14,6 +15,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import ssl
 import tempfile
 import urllib.parse
 import uuid
@@ -59,6 +61,71 @@ def safe_failure(exc):
     return {"http_status": int(status.group(1)) if status else None,
             "forbidden": bool(status and status.group(1) == "403"),
             "unauthorized": bool(status and status.group(1) == "401")}
+
+
+def inspect_alternate_certificate(signer, root, api):
+    """Read the second authorized CI P12 certificate without exporting its key."""
+    encoded = os.environ.get("BEREAL_ALT_CERTIFICATE_BASE64", "")
+    alternate_password = os.environ.get("BEREAL_ALT_P12_PASSWORD", "")
+    result = {"configured": bool(encoded), "certificate_decode_valid": False,
+              "certificate_team_valid": False, "certificate_expiry_valid": False,
+              "api_distribution_certificate_validated": False,
+              "private_key_exported": False,
+              "alternate_password_configured": bool(alternate_password),
+              "primary_password_fallback_used": bool(encoded and not alternate_password)}
+    if not encoded:
+        return None, result
+    try:
+        p12 = signer.private(root / "alternate-identity.p12", base64.b64decode(
+            "".join(encoded.split()), validate=True))
+        previous_password = os.environ.get("P12_PASSWORD")
+        try:
+            # read_pkcs12 uses an environment variable, never a password argument.
+            if alternate_password:
+                os.environ["P12_PASSWORD"] = alternate_password
+            pem = signer.read_pkcs12(p12, ["-clcerts", "-nokeys"])
+        finally:
+            if previous_password is None:
+                os.environ.pop("P12_PASSWORD", None)
+            else:
+                os.environ["P12_PASSWORD"] = previous_password
+        certificates = re.findall(br"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", pem, re.S)
+        if len(certificates) != 1:
+            raise RuntimeError("Expected one alternate identity certificate")
+        der = ssl.PEM_cert_to_DER_cert(certificates[0].decode())
+        result["certificate_decode_valid"] = True
+        result["certificate_sha256"] = hashlib.sha256(der).hexdigest()
+        subject = signer.run(["openssl", "x509", "-inform", "DER", "-noout",
+                              "-subject", "-nameopt", "RFC2253"], der).decode()
+        result["certificate_team_valid"] = os.environ["APPLE_TEAM_ID"] in re.findall(
+            r"(?:^|,)OU=([A-Z0-9]{10})(?=,|$)", re.sub(r"^subject\s*=\s*", "", subject.strip()))
+        try:
+            signer.run(["openssl", "x509", "-inform", "DER", "-noout", "-checkend", "0"], der)
+            result["certificate_expiry_valid"] = True
+        except RuntimeError:
+            pass
+        matches = []
+        for certificate in api.collection("/v1/certificates"):
+            attributes = certificate.get("attributes", {})
+            if not attributes.get("certificateContent"):
+                continue
+            try:
+                matches_identity = signer.helper.decode_base64(attributes["certificateContent"]) == der
+            except (ValueError, TypeError):
+                continue
+            if matches_identity:
+                matches.append(certificate)
+        result["matching_apple_certificate_count"] = len(matches)
+        result["api_distribution_certificate_validated"] = (
+            len(matches) == 1
+            and matches[0].get("attributes", {}).get("certificateType") in ("IOS_DISTRIBUTION", "DISTRIBUTION")
+            and signer.helper.is_future(matches[0].get("attributes", {}).get("expirationDate")))
+        valid = all(result[name] for name in ("certificate_decode_valid", "certificate_team_valid",
+                    "certificate_expiry_valid", "api_distribution_certificate_validated"))
+        return der if valid else None, result
+    except Exception as exc:
+        result["safe_failure"] = safe_failure(exc)
+        return None, result
 
 
 def profile_analysis(signer, resource, der, team, udid):
@@ -134,7 +201,7 @@ def profile_analysis(signer, resource, der, team, udid):
             "compatible_with_current_device_only": standard and bool(concrete_targets) and checks["only_current_device"]}
 
 
-def diagnose(signer, api, der, device):
+def diagnose(signer, api, der, device, include_registration_checks=True):
     targets = [signer.ROOT_ID + suffix for suffix in signer.SAFE_SUFFIXES]
     receipt = {
         "mode": "read_only_apple_access_diagnostics", "schema_version": 1,
@@ -149,7 +216,7 @@ def diagnose(signer, api, der, device):
     # Successful GET does not prove permission to POST. Check only the five
     # requested IDs and publish only whether each exact registration exists.
     scoped_bundle_checks = []
-    for target in targets:
+    for target in targets if include_registration_checks else []:
         check = {"target_bundle_identifier": target}
         try:
             registrations = api.collection("/v1/bundleIds", {
@@ -206,11 +273,14 @@ def diagnose(signer, api, der, device):
         if result["compatible_with_current_device_only"]:
             counts["compatible_current_device_only_profile_count"] += 1
             exact_coverage.update(result["concrete_targets"])
+            if result["wildcard_grant"] and len(result["concrete_targets"]) == len(targets):
+                counts["compatible_current_device_only_wildcard_all_targets_profile_count"] += 1
     receipt["catalog_distribution_types"] = dict(distributions)
     for name in ("active_ios_adhoc_profile_count", "profile_cms_or_structure_rejection_count",
                  "cms_decoded_profile_count", "scoped_profile_count", "unrelated_identifier_profile_count",
                  "wildcard_grant_profile_count", "compatible_current_device_included_profile_count",
-                 "compatible_current_device_only_profile_count"):
+                 "compatible_current_device_only_profile_count",
+                 "compatible_current_device_only_wildcard_all_targets_profile_count"):
         receipt[name] = counts[name]
     receipt["decoded_profile_check_pass_counts"] = dict(sorted(passed.items()))
     receipt["decoded_profile_check_failure_counts"] = dict(sorted(failed.items()))
@@ -241,6 +311,18 @@ def main():
         api = ReadOnlyAPI(signer.RefreshingAppleAPI(asc))
         _, device = signer.signing_readiness(api, der)
         receipt = diagnose(signer, api, der, device)
+        alternate_der, alternate = inspect_alternate_certificate(signer, Path(temporary), api)
+        alternate["same_certificate_as_primary"] = (
+            alternate.get("certificate_sha256") == hashlib.sha256(der).hexdigest()) if alternate.get("certificate_sha256") else False
+        if alternate_der is not None:
+            alternate["profile_compatibility"] = diagnose(
+                signer, api, alternate_der, device, include_registration_checks=False)
+            alternate["fits_existing_wildcard_profile_for_all_five_targets_and_only_current_device"] = (
+                alternate["profile_compatibility"]["compatible_current_device_only_wildcard_all_targets_profile_count"] > 0)
+        else:
+            alternate["fits_existing_wildcard_profile_for_all_five_targets_and_only_current_device"] = False
+        receipt["alternate_identity"] = alternate
+        receipt["schema_version"] = 2
     output = Path("bereal-public")
     output.mkdir(exist_ok=True)
     (output / "apple-access-diagnostics.json").write_text(json.dumps(receipt, indent=2) + "\n")

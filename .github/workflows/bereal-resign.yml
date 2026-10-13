@@ -43,7 +43,12 @@ jobs:
           set -euo pipefail
           if [[ -f bereal-signing-input.json ]]; then
             if [[ -f bereal-prepare-input-only.flag ]]; then
-              python3 scripts/bereal-resign.py --prepare-input
+              bereal_input_version=$(python3 -c 'import json; print(json.load(open("bereal-signing-input.json"))["version"])')
+              if [[ "$bereal_input_version" == 3 ]]; then
+                python3 scripts/bereal-resign.py --verify-input
+              else
+                python3 scripts/bereal-resign.py --prepare-input
+              fi
             else
               python3 scripts/bereal-resign.py
             fi
@@ -59,9 +64,11 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          BEREAL_ALT_CERTIFICATE_BASE64: ${{ secrets.DIST_P12_BASE64 }}
+          BEREAL_ALT_P12_PASSWORD: ${{ secrets.DIST_P12_PASSWORD }}
         run: python3 scripts/bereal-access-diagnostics.py
       - name: Save authenticated encrypted original for continuation
-        if: ${{ always() && hashFiles('bereal-prepare-input-only.flag') != '' }}
+        if: ${{ always() && hashFiles('bereal-prepare-input-only.flag') != '' && hashFiles('bereal-input-transfer/input-metadata.json') != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: BeReal493-encrypted-input-${{ github.sha }}
@@ -69,7 +76,7 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
       - name: Save encrypted unsigned verification package
-        if: ${{ hashFiles('bereal-prepare-input-only.flag') != '' }}
+        if: ${{ hashFiles('bereal-prepare-input-only.flag') != '' && hashFiles('bereal-output/BeReal493-unsigned-delivery.cms') != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: BeReal493-unsigned-encrypted-${{ github.sha }}
