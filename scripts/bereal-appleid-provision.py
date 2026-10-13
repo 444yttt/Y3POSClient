@@ -295,7 +295,7 @@ def publish_challenge(challenge, public_root: Path, publisher: Path):
     path = directory / 'challenge.json'
     path.write_text(json.dumps(challenge.public, indent=2) + '\n')
     try:
-        result = subprocess.run(['node', str(publisher), str(path)],
+        result = subprocess.run([os.environ.get('BEREAL_NODE_EXECUTABLE', 'node'), str(publisher), str(path)],
                                 capture_output=True, timeout=60, check=False)
         if result.returncode or len(result.stdout) > 65536:
             raise ValueError('Challenge publication failed')

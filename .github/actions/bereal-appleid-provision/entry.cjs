@@ -7,5 +7,7 @@ if (process.env.GITHUB_REPOSITORY !== '444yttt/Y3POSClient' ||
   process.exit(1);
 }
 const script = path.join(process.env.GITHUB_WORKSPACE, 'scripts/bereal-appleid-provision.py');
-const result = spawnSync('python3', [script], { stdio: 'inherit', env: process.env });
+const result = spawnSync('python3', [script], {
+  stdio: 'inherit', env: { ...process.env, BEREAL_NODE_EXECUTABLE: process.execPath }
+});
 process.exitCode = Number.isInteger(result.status) ? result.status : 1;
