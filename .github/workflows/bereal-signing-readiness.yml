@@ -1,0 +1,27 @@
+name: BeReal signing readiness
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/bereal-signing-readiness.yml'
+      - 'scripts/bereal-signing-readiness.py'
+permissions:
+  contents: read
+jobs:
+  readiness:
+    if: ${{ github.repository == '444yttt/Y3POSClient' && github.ref == 'refs/heads/main' }}
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Check authorized signing identity and device provisioning access
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 || secrets.DIST_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD || secrets.DIST_P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: python3 scripts/bereal-signing-readiness.py
