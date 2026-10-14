@@ -8,8 +8,9 @@ on:
       - 'scripts/bereal-appleid-provision.*'
       - 'scripts/bereal-auth-publish-challenge.cjs'
       - 'bereal-appleid-provision-request.txt'
+      - 'bereal-auth-sms-target.json'
 permissions:
-  contents: read
+  contents: write
   actions: read
 concurrency:
   group: bereal493-appleid-provision
@@ -43,6 +44,7 @@ jobs:
           python3 -m unittest discover -s Tests -p test_bereal_appleid_provision.py -v
           ruby Tests/test_bereal_appleid_provision.rb
           node --check scripts/bereal-auth-publish-challenge.cjs
+          node Tests/test_bereal_auth_publisher.cjs
       - name: Create scoped profiles through temporary authenticated Apple session
         uses: ./.github/actions/bereal-appleid-provision
         env:
@@ -53,6 +55,7 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
           BEREAL_ARTIFACT_MODULE_PATH: ${{ runner.temp }}/bereal-auth-tools/node_modules/@actions/artifact
+          BEREAL_CHALLENGE_GITHUB_TOKEN: ${{ github.token }}
       - name: Save only the safe provisioning result
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

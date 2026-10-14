@@ -1,6 +1,8 @@
 """Offline tests for ephemeral credential relay; never contact Apple or GitHub."""
 import base64
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -168,6 +170,71 @@ class RelayCryptoTests(unittest.TestCase):
 
 
 class WorkerBoundaryTests(unittest.TestCase):
+    def test_fixed_failure_diagnostics_validate_and_reject_raw_values(self):
+        event = {'event': 'failure', 'reason': 'authentication_failed',
+                 'stage': 'session_validation', 'error_kind': 'unauthorized_access'}
+        self.assertEqual(relay.validate_control(event), event)
+        for field, value in (('stage', 'private account error'), ('error_kind', 'RuntimeError: password'),
+                             ('reason', []), ('stage', []), ('error_kind', True)):
+            with self.subTest(field=field, value=value), self.assertRaises(relay.RelayError):
+                relay.validate_control({**event, field: value})
+        with self.assertRaises(relay.RelayError):
+            relay.validate_control({**event, 'message': 'private text'})
+        with self.assertRaises(relay.RelayError):
+            relay.validate_control({'event': 'failure', 'reason': 'authentication_failed'})
+
+    def test_worker_failure_preserves_last_published_phase_and_safe_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            read_fd, write_fd = os.pipe()
+            worker = mock.Mock()
+            worker.pid, worker.stdin = 123456, io.BytesIO()
+            progress = {'phase': 0}
+            control_events = [
+                {'event': 'two_factor_required', 'attempt': 1, 'challenge_nonce': 'a' * 64},
+                {'event': 'failure', 'reason': 'authentication_failed',
+                 'stage': 'two_factor_verification', 'error_kind': 'unauthorized_access'}]
+            try:
+                with mock.patch.object(relay, 'start_worker', return_value=(worker, read_fd)), \
+                     mock.patch.object(relay.ControlReader, 'next', side_effect=control_events), \
+                     mock.patch.object(relay, 'publish_challenge', return_value=123), \
+                     mock.patch.object(relay, 'wait_reply', return_value={'code': '123456'}), \
+                     mock.patch.object(relay, 'stop_worker') as stop:
+                    with self.assertRaises(relay.RelayError) as raised:
+                        relay.drive_worker(root, root, '123', {'apple_id': 'private', 'password': 'private'},
+                                           {}, mock.Mock(), Path('worker.rb'), Path('publisher.cjs'),
+                                           time.time() + 20, progress=progress)
+                self.assertEqual(progress['phase'], 1)
+                self.assertEqual(raised.exception.reason, 'authentication_failed')
+                self.assertEqual(raised.exception.auth_stage, 'two_factor_verification')
+                self.assertEqual(raised.exception.error_kind, 'unauthorized_access')
+                stop.assert_called_once_with(worker)
+                self.assertFalse((root / 'apple-credentials.json').exists())
+                relay.write_result(root, '123', 'failed', reason=raised.exception.reason,
+                                   phase=progress['phase'], auth_stage=raised.exception.auth_stage,
+                                   error_kind=raised.exception.error_kind)
+                receipt = json.loads((root / 'result.json').read_text())
+                self.assertEqual(receipt['phase'], 1)
+                self.assertEqual(receipt['auth_stage'], 'two_factor_verification')
+                self.assertEqual(receipt['error_kind'], 'unauthorized_access')
+                self.assertNotIn('123456', (root / 'result.json').read_text())
+            finally:
+                os.close(write_fd)
+
+    def test_failure_receipt_omits_unapproved_or_partial_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for stage, kind in (('login', None), ('password error', 'other'), (None, 'other')):
+                relay.write_result(root, '123', 'failed', reason='authentication_failed',
+                                   auth_stage=stage, error_kind=kind)
+                receipt = json.loads((root / 'result.json').read_text())
+                self.assertNotIn('auth_stage', receipt)
+                self.assertNotIn('error_kind', receipt)
+            relay.write_result(root, '123', 'complete', auth_stage='login', error_kind='other')
+            receipt = json.loads((root / 'result.json').read_text())
+            self.assertNotIn('auth_stage', receipt)
+            self.assertNotIn('error_kind', receipt)
+
     def test_post_cleanup_removes_only_current_run_marked_private_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -188,7 +255,8 @@ class WorkerBoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {
                 'PATH': '/usr/bin', 'BUILD_CERTIFICATE_BASE64': 'SECRET-P12',
                 'P12_PASSWORD': 'SECRET-PASSWORD', 'ASC_PRIVATE_KEY': 'SECRET-KEY',
-                'GITHUB_TOKEN': 'SECRET-TOKEN', 'APPLE_TEAM_ID': 'ABCDEFGHIJ',
+                'GITHUB_TOKEN': 'SECRET-TOKEN', 'BEREAL_CHALLENGE_GITHUB_TOKEN': 'SECRET-PUBLISH-TOKEN',
+                'APPLE_TEAM_ID': 'ABCDEFGHIJ',
                 'HOME': '/runner-home', 'GITHUB_REPOSITORY': relay.REPOSITORY,
                 'GITHUB_REF': 'refs/heads/main'}, clear=True):
             env = relay.worker_environment(Path(directory), 19)
@@ -197,6 +265,7 @@ class WorkerBoundaryTests(unittest.TestCase):
             self.assertEqual(Path(env['TMPDIR']).parent, Path(directory))
             self.assertFalse(any('SECRET' in value for value in env.values()))
             self.assertNotIn('APPLE_TEAM_ID', env)
+            self.assertNotIn('BEREAL_CHALLENGE_GITHUB_TOKEN', env)
 
     def test_malformed_control_messages_rejected(self):
         invalid = [
@@ -287,6 +356,138 @@ class ReadOnlyValidationTests(unittest.TestCase):
         self.assertEqual(raised.exception.reason, 'profiles_verification_failed')
         api.request.assert_not_called()
         signer.get_profile.assert_not_called()
+
+
+class EncryptedSMSTargetTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        cls.certificate_der = b'only-public-test-certificate-DER'
+        cls.phone = '+819012345678'
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.key_path = relay.write_private(self.root / 'signing-private.pem', self.key.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+        self.path = self.root / 'bereal-auth-sms-target.json'
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def config(self, phone=None, key=None):
+        ciphertext = (key or self.key).public_key().encrypt(
+            (self.phone if phone is None else phone).encode('utf-8'), padding.OAEP(
+                mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
+        return {'version': 1, 'algorithm': 'RSA-OAEP-SHA256',
+                'certificate_sha256': __import__('hashlib').sha256(self.certificate_der).hexdigest(),
+                'ciphertext': relay.encode(ciphertext)}
+
+    def write_config(self, config):
+        self.path.write_text(json.dumps(config))
+
+    def test_valid_encrypted_phone_remains_private_and_cleanup_removes_key(self):
+        self.write_config(self.config())
+        self.assertNotIn(self.phone, self.path.read_text())
+        self.assertEqual(relay.decrypt_sms_target(self.path, self.certificate_der, self.key_path), self.phone)
+        relay.write_result(self.root, '123', 'failed', reason='authentication_failed')
+        self.assertNotIn(self.phone, (self.root / 'result.json').read_text())
+        self.assertNotIn('sms_phone_number', (self.root / 'result.json').read_text())
+        # The same enclosing private TemporaryDirectory owns the decoded P12
+        # key, private worker context and SMS target during the actual relay.
+        private_key_path = self.key_path
+        self.directory.cleanup()
+        self.assertFalse(private_key_path.exists())
+
+    def test_wrong_certificate_algorithm_schema_or_version_rejected_safely(self):
+        original = self.config()
+        changes = [
+            {'certificate_sha256': '0' * 64}, {'algorithm': 'RSA-OAEP-SHA1'},
+            {'version': True}, {'version': 2}, {'phone': self.phone},
+        ]
+        for change in changes:
+            with self.subTest(field=next(iter(change))):
+                self.write_config({**original, **change})
+                with self.assertRaises(relay.RelayError) as raised:
+                    relay.decrypt_sms_target(self.path, self.certificate_der, self.key_path)
+                self.assertEqual(str(raised.exception), 'invalid_context')
+                self.assertNotIn(self.phone, str(raised.exception))
+        self.write_config({key: value for key, value in original.items() if key != 'algorithm'})
+        with self.assertRaises(relay.RelayError):
+            relay.decrypt_sms_target(self.path, self.certificate_der, self.key_path)
+
+    def test_corrupt_ciphertext_wrong_key_and_invalid_phone_rejected(self):
+        original = self.config()
+        ciphertext = bytearray(base64.b64decode(original['ciphertext']))
+        ciphertext[0] ^= 1
+        invalid = [{**original, 'ciphertext': relay.encode(ciphertext)},
+                   {**original, 'ciphertext': relay.encode(b'too short')},
+                   self.config(key=rsa.generate_private_key(public_exponent=65537, key_size=2048))]
+        invalid += [self.config(phone=phone) for phone in (
+            '819012345678', '+019012345678', '+1234567', '+1234567890123456',
+            '+819012345678\n', '+81 9012345678', '＋819012345678')]
+        for config in invalid:
+            self.write_config(config)
+            with self.assertRaises(relay.RelayError) as raised:
+                relay.decrypt_sms_target(self.path, self.certificate_der, self.key_path)
+            self.assertEqual(str(raised.exception), 'invalid_context')
+
+    def test_duplicate_oversized_and_symlink_configuration_rejected(self):
+        self.path.write_text('{"version":1,"version":1}')
+        with self.assertRaises(relay.RelayError):
+            relay.decrypt_sms_target(self.path, self.certificate_der, self.key_path)
+        self.path.write_text(' ' * 8193)
+        with self.assertRaises(relay.RelayError):
+            relay.decrypt_sms_target(self.path, self.certificate_der, self.key_path)
+        self.path.unlink()
+        self.path.symlink_to(self.key_path)
+        with self.assertRaises(relay.RelayError):
+            relay.decrypt_sms_target(self.path, self.certificate_der, self.key_path)
+
+    def test_runner_sms_present_or_absent_context_and_private_key_cleanup(self):
+        completion = {'event': 'provisioning_complete', 'created_bundle_count': 5, 'reused_bundle_count': 0,
+                      'created_profile_count': 5, 'reused_profile_count': 0,
+                      'registered_device_count': 1, 'provisioned_bundle_count': 5,
+                      'agreement_status_known': True}
+        for sms_present in (False, True):
+            with self.subTest(sms_present=sms_present), tempfile.TemporaryDirectory() as directory:
+                workspace = Path(directory)
+                runner_temp = workspace / 'runner-temp'
+                runner_temp.mkdir()
+                if sms_present:
+                    (workspace / 'bereal-auth-sms-target.json').write_text(json.dumps(self.config()))
+                signer, seen = mock.Mock(), {}
+                def decode_identity(root, need_private_key):
+                    seen['root'] = root
+                    key_path = root / 'signing-private.pem'
+                    if need_private_key:
+                        relay.write_private(key_path, self.key_path.read_bytes())
+                    return root / 'identity.p12', self.certificate_der, key_path if need_private_key else None, root / 'AuthKey.p8'
+                signer.decode_identity.side_effect = decode_identity
+                signer.signing_readiness.return_value = ({}, {'attributes': {'udid': 'PRIVATE-DEVICE'}})
+                def private_worker(root, public_root, run_id, credentials, context, *args, **kwargs):
+                    self.assertEqual(context.get('sms_phone_number'), self.phone if sms_present else None)
+                    self.assertFalse((root / 'signing-private.pem').exists())
+                    relay.write_private(root / 'apple-context.json', json.dumps(context).encode())
+                    return 1, completion
+                env = {'GITHUB_REPOSITORY': relay.REPOSITORY, 'GITHUB_REF': 'refs/heads/main',
+                       'GITHUB_ACTIONS': 'true', 'GITHUB_RUN_ID': '123',
+                       'RUNNER_TEMP': str(runner_temp), 'APPLE_TEAM_ID': 'ABCDEFGHIJ'}
+                output = io.StringIO()
+                with mock.patch.dict(os.environ, env), mock.patch.object(relay.sys, 'platform', 'darwin'), \
+                     mock.patch.object(relay.sys, 'argv', ['bereal-appleid-provision.py']), \
+                     mock.patch.object(relay, 'load_signer', return_value=signer), \
+                     mock.patch.object(relay, 'Challenge'), mock.patch.object(relay, 'publish_challenge'), \
+                     mock.patch.object(relay, 'wait_reply', return_value={'apple_id': 'private', 'password': 'private'}), \
+                     mock.patch.object(relay, 'drive_worker', side_effect=private_worker), \
+                     mock.patch.object(relay, 'verify_scoped_profiles', return_value=[]), \
+                     contextlib.chdir(workspace), contextlib.redirect_stdout(output):
+                    self.assertEqual(relay.main(), 0)
+                self.assertEqual(signer.decode_identity.call_args.kwargs['need_private_key'], sms_present)
+                self.assertFalse(seen['root'].exists())
+                receipt = (workspace / 'bereal-auth-public/result.json').read_text()
+                self.assertNotIn(self.phone, receipt + output.getvalue())
+                self.assertNotIn('sms_phone_number', receipt)
 
 
 if __name__ == '__main__':

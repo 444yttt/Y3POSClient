@@ -59,12 +59,29 @@ FAILURE_REASONS = FAILURE_REASONS | frozenset((
     'two_factor_timeout', 'two_factor_input_rejected', 'agreement_status_unavailable',
     'ambiguous_bundle', 'bundle_mismatch', 'profile_verification_failed',
     'permission_denied', 'apple_service_unavailable', 'interrupted', 'worker_setup_failed'))
+AUTH_STAGES = frozenset((
+    'login', 'awaiting_two_factor', 'two_factor_verification', 'session_trust',
+    'session_validation', 'portal_session', 'agreement_read', 'certificate_read',
+    'device_read', 'bundle_read', 'profile_read', 'bundle_create', 'profile_create',
+    'profile_validation', 'unknown'))
+AUTH_ERROR_KINDS = frozenset((
+    'invalid_user_credentials', 'unauthorized_access', 'missing_user_credentials', 'other'))
 
 
 class RelayError(RuntimeError):
-    def __init__(self, reason: str):
+    def __init__(self, reason: str, *, auth_stage=None, error_kind=None):
         self.reason = reason if reason in FAILURE_REASONS else 'worker_failed'
+        diagnostics = safe_auth_diagnostics(auth_stage, error_kind)
+        self.auth_stage = diagnostics.get('auth_stage')
+        self.error_kind = diagnostics.get('error_kind')
         super().__init__(self.reason)
+
+
+def safe_auth_diagnostics(stage, error_kind):
+    if (isinstance(stage, str) and stage in AUTH_STAGES
+            and isinstance(error_kind, str) and error_kind in AUTH_ERROR_KINDS):
+        return {'auth_stage': stage, 'error_kind': error_kind}
+    return {}
 
 
 def strict_json(data: bytes | str, limit: int = MAX_PACKET_BYTES):
@@ -150,6 +167,42 @@ def bounded_b64(value, minimum: int, maximum: int) -> bytes:
     if not minimum <= len(decoded) <= maximum or encode(decoded) != value:
         raise ValueError('Invalid base64 encoding')
     return decoded
+
+
+def decrypt_sms_target(path: Path, certificate_der: bytes, private_key_path: Path) -> str:
+    """Restore only an authenticated, current-certificate-bound SMS target.
+
+    This public repository file contains ciphertext only. The decrypted phone
+    number is returned to the private worker context, never to a public receipt.
+    """
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or not 1 <= info.st_size <= 8192:
+            raise ValueError('Invalid SMS input file')
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as stream:
+            actual = os.fstat(stream.fileno())
+            if actual.st_ino != info.st_ino or actual.st_dev != info.st_dev:
+                raise ValueError('SMS input file changed')
+            config = strict_json(stream.read(8193), 8192)
+        if (not isinstance(config, dict)
+                or set(config) != {'version', 'algorithm', 'certificate_sha256', 'ciphertext'}
+                or type(config['version']) is not int or config['version'] != 1
+                or config['algorithm'] != 'RSA-OAEP-SHA256'
+                or config['certificate_sha256'] != hashlib.sha256(certificate_der).hexdigest()):
+            raise ValueError('Invalid SMS input contract')
+        key = serialization.load_pem_private_key(private_key_path.read_bytes(), password=None)
+        if not isinstance(key, rsa.RSAPrivateKey) or not 2048 <= key.key_size <= 8192:
+            raise ValueError('Invalid SMS private key')
+        ciphertext = bounded_b64(config['ciphertext'], key.key_size // 8, key.key_size // 8)
+        phone = key.decrypt(ciphertext, padding.OAEP(
+            mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None)).decode('ascii')
+        if not re.fullmatch(r'\+[1-9][0-9]{7,14}', phone):
+            raise ValueError('Invalid SMS phone scope')
+        return phone
+    except Exception:
+        # File contents, ciphertext errors and the decrypted target are never
+        # part of an exception string or a CI diagnostic.
+        raise RelayError('invalid_context') from None
 
 
 def validate_run_id(run_id):
@@ -370,7 +423,9 @@ def validate_control(event):
         if set(event) != {'event'}:
             raise RelayError('worker_protocol_invalid')
     elif kind == 'failure':
-        if set(event) != {'event', 'reason'} or event['reason'] not in FAILURE_REASONS:
+        if (set(event) != {'event', 'reason', 'stage', 'error_kind'}
+                or not isinstance(event['reason'], str) or event['reason'] not in FAILURE_REASONS
+                or not safe_auth_diagnostics(event['stage'], event['error_kind'])):
             raise RelayError('worker_protocol_invalid')
     else:
         raise RelayError('worker_protocol_invalid')
@@ -423,7 +478,8 @@ def stop_worker(worker):
 
 
 def drive_worker(root, public_root, run_id, credentials, context, reader,
-                 worker_path, publisher, deadline):
+                 worker_path, publisher, deadline, *, progress=None):
+    progress = {'phase': 0} if progress is None else progress
     worker, fd = None, None
     challenge = None
     try:
@@ -441,6 +497,7 @@ def drive_worker(root, public_root, run_id, credentials, context, reader,
                 previous_nonce = event['challenge_nonce']
                 challenge = Challenge(root, run_id, phase, min(int(deadline), int(time.time()) + OTP_DURATION_SECONDS))
                 publish_challenge(challenge, public_root, publisher)
+                progress['phase'] = phase
                 payload = wait_reply(challenge, reader, deadline=deadline, worker=worker)
                 worker.stdin.write((json.dumps({'code': payload['code'], 'challenge_nonce': previous_nonce}) + '\n').encode())
                 worker.stdin.flush()
@@ -456,7 +513,7 @@ def drive_worker(root, public_root, run_id, credentials, context, reader,
             elif event['event'] == 'agreement_review_required':
                 raise RelayError('agreement_review_required')
             else:
-                raise RelayError(event['reason'])
+                raise RelayError(event['reason'], auth_stage=event['stage'], error_kind=event['error_kind'])
     finally:
         if challenge is not None:
             challenge.close()
@@ -515,12 +572,13 @@ def verify_scoped_profiles(signer, api, der, team, device):
 
 
 def write_result(public_root, run_id, status, *, reason=None, phase=0, profiles=None,
-                 provisioning_event=None):
+                 provisioning_event=None, auth_stage=None, error_kind=None):
     receipt = {'version': 1, 'purpose': PURPOSE, 'run_id': run_id, 'status': status,
                'phase': phase, 'credentials_retained': False, 'private_session_retained': False,
                'signed_ipa_created': False}
     if reason is not None:
         receipt['reason'] = reason if reason in FAILURE_REASONS else 'worker_failed'
+        receipt.update(safe_auth_diagnostics(auth_stage, error_kind))
     if profiles is not None:
         receipt.update(registered_device_count=1, provisioned_bundle_count=5,
                        scoped_provisioning_verified=True, profiles=profiles)
@@ -555,6 +613,8 @@ def main():
     publisher = Path(__file__).with_name('bereal-auth-publish-challenge.cjs').resolve()
     deadline = time.time() + MAX_DURATION_SECONDS
     challenge, phase, profiles, reason, completion = None, 0, None, None, None
+    context = None
+    progress, auth_stage, error_kind = {'phase': 0}, None, None
 
     def cancelled(signum, frame):
         raise RelayError('relay_cancelled')
@@ -566,13 +626,22 @@ def main():
             write_cleanup_state(root, run_id)
             try:
                 signer = load_signer()
-                _, der, _, asc = signer.decode_identity(root, need_private_key=False)
+                sms_config = Path('bereal-auth-sms-target.json')
+                sms_present = sms_config.exists() or sms_config.is_symlink()
+                _, der, sms_key, asc = signer.decode_identity(root, need_private_key=sms_present)
                 api = signer.RefreshingAppleAPI(asc)
                 _, device = signer.signing_readiness(api, der)
                 context = {'team_id': os.environ['APPLE_TEAM_ID'],
                            'certificate_sha256': hashlib.sha256(der).hexdigest(),
                            'target_bundle_identifiers': list(IDENTIFIERS),
                            'expected_enabled_device_count': 1}
+                if sms_present:
+                    try:
+                        context['sms_phone_number'] = decrypt_sms_target(sms_config, der, sms_key)
+                    finally:
+                        # Remove the decoded signing-key copy before waiting
+                        # for login; the original existing CI secret is intact.
+                        sms_key.unlink(missing_ok=True)
                 challenge = Challenge(root, run_id, 0, int(deadline))
                 publish_challenge(challenge, public_root, publisher)
                 reader = PublicReplyReader(run_id)
@@ -580,7 +649,7 @@ def main():
                 challenge = None
                 try:
                     phase, completion = drive_worker(root, public_root, run_id, credentials, context,
-                                                      reader, worker_path, publisher, deadline)
+                                                      reader, worker_path, publisher, deadline, progress=progress)
                 finally:
                     credentials.clear()
                     del credentials
@@ -588,19 +657,24 @@ def main():
             finally:
                 if challenge is not None:
                     challenge.close()
+                if context is not None:
+                    context.pop('sms_phone_number', None)
                 # TemporaryDirectory also removes P12, ASC key, context and
                 # isolated worker TMPDIR after worker shutdown. The Ruby worker
                 # disables Fastlane session/cookie/service-key persistence.
     except RelayError as error:
         reason = error.reason
+        auth_stage, error_kind = error.auth_stage, error.error_kind
     except Exception:
         reason = 'relay_initialization_failed'
     finally:
         for sig, handler in old_handlers.items():
             signal.signal(sig, handler)
     # Receipt is written only after private files and worker state are removed.
+    phase = max(phase, progress['phase'])
     write_result(public_root, run_id, 'complete' if reason is None else 'failed',
-                 reason=reason, phase=phase, profiles=profiles, provisioning_event=completion)
+                 reason=reason, phase=phase, profiles=profiles, provisioning_event=completion,
+                 auth_stage=auth_stage, error_kind=error_kind)
     if reason is not None:
         print('Apple authentication relay stopped: ' + reason, flush=True)
         return 1

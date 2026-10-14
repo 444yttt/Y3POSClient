@@ -44,6 +44,7 @@ def fixture
   api.const_set(:Client, Class.new do
     define_singleton_method(:login) do |user, password, **options|
       state[:calls] << [:login, options]
+      state[:sms_at_login] = ENV['SPACESHIP_2FA_SMS_DEFAULT_PHONE_NUMBER']
       raise 'credentials not forwarded' unless user == 'offline@example.invalid' && password == 'synthetic-password'
       portal = Object.new
       portal.define_singleton_method(:list_pending_agreements) { |**_options| state[:agreements] }
@@ -112,6 +113,48 @@ tests['scope validation rejects unrelated targets'] = lambda do
   _worker, state, _output = fixture
   context = state[:context].merge('target_bundle_identifiers' => BeRealAppleID::TARGETS + ['com.unrelated.app'])
   fails('invalid_context') { BeRealAppleID.validate_context(context) }
+end
+tests['optional SMS context accepts only E164 without changing signing scope'] = lambda do
+  _worker, state, _output = fixture
+  valid = state[:context].merge('sms_phone_number' => '+819011112233')
+  assert(BeRealAppleID.validate_context(valid) == valid)
+  [nil, '+0819011112233', '09011112233', '+81 9011112233', '+1234567', '+1234567890123456', 819011112233].each do |value|
+    fails('invalid_context') { BeRealAppleID.validate_context(state[:context].merge('sms_phone_number' => value)) }
+  end
+end
+tests['trusted SMS selection requires unique country prefix and visible suffix'] = lambda do
+  target = '+819011112233'
+  displayed = '+81 •••• ••••33'
+  assert(BeRealAppleID.select_sms_option([displayed, '+1 (•••) •••-••44'], target) == displayed)
+  assert(BeRealAppleID.select_sms_option(['+81 90-1111-2233'], target) == '+81 90-1111-2233')
+  fails('unsupported_authentication') { BeRealAppleID.select_sms_option([displayed, '+81••••••••33'], target) }
+  fails('unsupported_authentication') { BeRealAppleID.select_sms_option(['+1 (•••) •••-••33'], target) }
+  fails('unsupported_authentication') { BeRealAppleID.select_sms_option(['+81 •••• ••••44'], target) }
+  fails('unsupported_authentication') { BeRealAppleID.select_sms_option(['••••••••33'], target) }
+end
+tests['SMS never adds numbers or chooses a non SMS trusted entry'] = lambda do
+  target = '+819011112233'
+  trusted = { 'id' => 1, 'numberWithDialCode' => '+81 •••• ••••33', 'pushMode' => 'sms' }
+  body = { 'trustedPhoneNumbers' => [trusted] }
+  snapshot = Marshal.dump(body)
+  assert(BeRealAppleID.select_trusted_sms_entry(body, target).equal?(trusted))
+  assert(Marshal.dump(body) == snapshot)
+  fails('unsupported_authentication') do
+    BeRealAppleID.select_trusted_sms_entry({ 'trustedPhoneNumbers' => [trusted.merge('pushMode' => 'voice')] }, target)
+  end
+  fails('unsupported_authentication') { BeRealAppleID.select_trusted_sms_entry({ 'trustedPhoneNumbers' => [] }, target) }
+end
+tests['SMS target exists only in worker environment while normal login runs'] = lambda do
+  worker, state, output = fixture
+  state[:context]['sms_phone_number'] = '+819011112233'
+  worker.run(creds)
+  assert(state[:sms_at_login] == '+819011112233')
+  assert(!ENV.key?('SPACESHIP_2FA_SMS_DEFAULT_PHONE_NUMBER') && !output.string.include?('+819011112233'))
+  worker, state, _output = fixture
+  state[:context]['sms_phone_number'] = '+819011112233'
+  state[:certs].clear
+  fails('certificate_mismatch') { worker.run(creds) }
+  assert(!ENV.key?('SPACESHIP_2FA_SMS_DEFAULT_PHONE_NUMBER'))
 end
 tests['private credential source removed even when JSON malformed'] = lambda do
   Dir.mktmpdir do |directory|
@@ -250,6 +293,7 @@ tests['two factor has unique request nonce and bounded attempts'] = lambda do
       input_write.puts(JSON.generate(code: '123456', challenge_nonce: event['challenge_nonce']))
     end
     assert(channel.two_factor_code == '123456')
+    assert(channel.stage == 'two_factor_verification')
     responder.value
   end
   assert(nonces.uniq.length == 3 && nonces.all? { |value| /\A[0-9a-f]{64}\z/.match?(value) })
@@ -271,8 +315,57 @@ tests['two factor does not substitute timeout with approval'] = lambda do
   input_read, input_write = IO.pipe
   channel = BeRealAppleID::Channel.new(output, input: input_read, timeout: 0.001)
   fails('two_factor_timeout') { channel.two_factor_code }
+  assert(channel.stage == 'awaiting_two_factor')
 ensure
   [input_read, input_write].compact.each(&:close)
+end
+tests['authentication diagnostics expose only fixed stage and error kind'] = lambda do
+  Object.const_set(:Spaceship, Module.new) unless Object.const_defined?(:Spaceship)
+  {
+    InvalidUserCredentialsError: 'invalid_user_credentials',
+    UnauthorizedAccessError: 'unauthorized_access',
+    NoUserCredentialsError: 'missing_user_credentials'
+  }.each do |name, expected_kind|
+    Spaceship.const_set(name, Class.new(StandardError)) unless Spaceship.const_defined?(name, false)
+    error = Spaceship.const_get(name).new('private-account@example.invalid password=synthetic-secret otp=654321')
+    output = StringIO.new
+    channel = BeRealAppleID::Channel.new(output)
+    channel.stage = 'session_validation'
+    channel.failure(error)
+    event = JSON.parse(output.string)
+    assert(event.keys.sort == %w[error_kind event reason stage])
+    assert(event == { 'event' => 'failure', 'reason' => 'authentication_failed',
+                     'stage' => 'session_validation', 'error_kind' => expected_kind })
+    assert(!output.string.include?('private-account') && !output.string.include?('synthetic-secret') &&
+           !output.string.include?('654321') && !output.string.include?('Spaceship::'))
+  end
+end
+tests['unapproved diagnostic stage and exception names are suppressed'] = lambda do
+  output = StringIO.new
+  channel = BeRealAppleID::Channel.new(output)
+  supplied = 'login'.dup
+  channel.stage = supplied
+  supplied.replace('private-password')
+  assert(channel.stage == 'login')
+  channel.stage = 'private-account@example.invalid'
+  assert(channel.stage == 'unknown')
+  unknown_error = Class.new(StandardError).new('secret response body')
+  channel.failure(unknown_error)
+  event = JSON.parse(output.string)
+  assert(event['stage'] == 'unknown' && event['error_kind'] == 'other')
+  assert(!output.string.include?('secret') && !output.string.include?('private-account'))
+end
+tests['diagnostic stage allowlist stays within the worker protocol'] = lambda do
+  expected = %w[login awaiting_two_factor two_factor_verification session_trust session_validation portal_session
+                agreement_read certificate_read device_read bundle_read profile_read bundle_create profile_create
+                profile_validation unknown]
+  assert(BeRealAppleID::STAGES == expected)
+  assert(BeRealAppleID::ERROR_KINDS == %w[invalid_user_credentials unauthorized_access missing_user_credentials other])
+  channel = BeRealAppleID::Channel.new(StringIO.new)
+  expected.each do |stage|
+    channel.stage = stage
+    assert(channel.stage == stage)
+  end
 end
 tests['private hooks suppress all persistent credentials and request logging'] = lambda do
   Object.const_set(:Spaceship, Module.new) unless Object.const_defined?(:Spaceship)
@@ -283,8 +376,21 @@ tests['private hooks suppress all persistent credentials and request logging'] =
     def cached_service_key = raise('persistent service key read attempted')
     def cache_service_key(_key) = raise('persistent service key write attempted')
     def ask_for_2fa_code(_prompt) = raise('raw prompt attempted')
+    def send_shared_login_request(_user, _password) = :normal_login_return
+    def store_session = :normal_trust_return
+    def fetch_olympus_session_after_signin = fetch_olympus_session
+    def fetch_olympus_session = :normal_session_return
+    def handle_two_factor(_response, _depth = 0)
+      @normal_factor_calls = (@normal_factor_calls || 0) + 1
+      :normal_two_factor_return
+    end
+    def match_phone_to_masked_phone(_target, displayed) = displayed == '+81 •••• ••••33'
   end)
-  fake_channel = Object.new
+  Spaceship.const_set(:PortalClient, Class.new(Spaceship::Client) do
+    def send_login_request(_user, _password) = :normal_portal_return
+    def teams = []
+  end)
+  fake_channel = BeRealAppleID::Channel.new(StringIO.new)
   fake_channel.define_singleton_method(:two_factor_code) { '123456' }
   BeRealAppleID.install_private_hooks(fake_channel)
   client = Spaceship::Client.new
@@ -294,6 +400,27 @@ tests['private hooks suppress all persistent credentials and request logging'] =
   assert(client.logger.is_a?(Logger))
   fails('unsupported_authentication') { client.handle_two_step(nil) }
   fails('unsupported_authentication') { client.choose_phone_number(['private number']) }
+  assert(client.send_shared_login_request('private user', 'private password') == :normal_login_return)
+  assert(fake_channel.stage == 'login')
+  assert(client.store_session == :normal_trust_return && fake_channel.stage == 'session_trust')
+  assert(client.fetch_olympus_session_after_signin == :normal_session_return && fake_channel.stage == 'session_validation')
+  portal = Spaceship::PortalClient.new
+  assert(portal.send_login_request('private user', 'private password') == :normal_portal_return)
+  assert(fake_channel.stage == 'portal_session')
+  assert(portal.teams == [] && fake_channel.stage == 'portal_session')
+  ENV['SPACESHIP_2FA_SMS_DEFAULT_PHONE_NUMBER'] = '+819011112233'
+  response = Struct.new(:body).new({ 'trustedPhoneNumbers' => [
+    { 'id' => 1, 'numberWithDialCode' => '+81 •••• ••••33', 'pushMode' => 'sms' }
+  ] })
+  assert(client.handle_two_factor(response) == :normal_two_factor_return)
+  assert(client.choose_phone_number(['+81 •••• ••••33']) == '+81 •••• ••••33')
+  invalid = Struct.new(:body).new({ 'trustedPhoneNumbers' => [
+    { 'id' => 2, 'numberWithDialCode' => '+81 •••• ••••44', 'pushMode' => 'sms' }
+  ] })
+  fails('unsupported_authentication') { client.handle_two_factor(invalid) }
+  assert(client.instance_variable_get(:@normal_factor_calls) == 1)
+ensure
+  ENV.delete('SPACESHIP_2FA_SMS_DEFAULT_PHONE_NUMBER')
 end
 
 tests.each do |name, test|

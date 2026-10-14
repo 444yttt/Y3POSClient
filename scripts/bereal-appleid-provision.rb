@@ -28,6 +28,20 @@ module BeRealAppleID
     authentication_failed permission_denied apple_service_unavailable
     provisioning_failed unsupported_authentication interrupted worker_setup_failed
   ].freeze
+  STAGES = %w[
+    login awaiting_two_factor two_factor_verification session_trust
+    session_validation portal_session agreement_read certificate_read device_read
+    bundle_read profile_read bundle_create profile_create profile_validation unknown
+  ].freeze
+  ERROR_KINDS = %w[invalid_user_credentials unauthorized_access missing_user_credentials other].freeze
+  AUTH_ERROR_CLASSES = {
+    'Spaceship::InvalidUserCredentialsError' => 'invalid_user_credentials',
+    'Spaceship::Client::InvalidUserCredentialsError' => 'invalid_user_credentials',
+    'Spaceship::UnauthorizedAccessError' => 'unauthorized_access',
+    'Spaceship::Client::UnauthorizedAccessError' => 'unauthorized_access',
+    'Spaceship::NoUserCredentialsError' => 'missing_user_credentials',
+    'Spaceship::Client::NoUserCredentialsError' => 'missing_user_credentials'
+  }.freeze
 
   class Failure < StandardError
     attr_reader :reason
@@ -44,6 +58,20 @@ module BeRealAppleID
   class Channel
     def initialize(output, input: STDIN, timeout: 600)
       @output, @input, @timeout, @attempt = output, input, timeout, 0
+      @stage, @state_lock = 'unknown', Mutex.new
+    end
+
+    def stage=(value)
+      @state_lock.synchronize { @stage = STAGES.find { |approved| approved == value } || 'unknown' }
+    end
+
+    def stage
+      @state_lock.synchronize { @stage }
+    end
+
+    def failure(error)
+      emit('failure', reason: BeRealAppleID.failure_reason(error), stage: stage,
+                      error_kind: BeRealAppleID.error_kind(error))
     end
 
     def emit(event, fields = {})
@@ -59,6 +87,7 @@ module BeRealAppleID
       @attempt += 1
       raise Failure, 'two_factor_attempt_limit' if @attempt > 3
       nonce = SecureRandom.hex(32)
+      self.stage = 'awaiting_two_factor'
       emit('two_factor_required', attempt: @attempt, challenge_nonce: nonce)
       raise Failure, 'two_factor_timeout' unless IO.select([@input], nil, nil, @timeout)
       line = @input.gets(1025)
@@ -69,6 +98,7 @@ module BeRealAppleID
              /\A[0-9]{6}\z/.match?(value['code'])
         raise Failure, 'two_factor_input_rejected'
       end
+      self.stage = 'two_factor_verification'
       value['code']
     rescue JSON::ParserError
       raise Failure, 'two_factor_input_rejected'
@@ -113,14 +143,54 @@ module BeRealAppleID
 
   def self.validate_context(value)
     expected = %w[certificate_sha256 expected_enabled_device_count target_bundle_identifiers team_id]
-    unless value.is_a?(Hash) && value.keys.sort == expected &&
+    allowed = expected + ['sms_phone_number']
+    unless value.is_a?(Hash) && (value.keys - allowed).empty? && (expected - value.keys).empty? &&
            value['team_id'].is_a?(String) && /\A[A-Z0-9]{10}\z/.match?(value['team_id']) &&
            value['certificate_sha256'].is_a?(String) && /\A[0-9a-f]{64}\z/.match?(value['certificate_sha256']) &&
            value['expected_enabled_device_count'] == 1 && value['target_bundle_identifiers'].is_a?(Array) &&
-           value['target_bundle_identifiers'].sort == TARGETS.sort
+           value['target_bundle_identifiers'].sort == TARGETS.sort &&
+           (!value.key?('sms_phone_number') || valid_sms_phone?(value['sms_phone_number']))
       raise Failure, 'invalid_context'
     end
     value
+  end
+
+  def self.valid_sms_phone?(value)
+    value.is_a?(String) && /\A\+[1-9][0-9]{7,14}\z/.match?(value)
+  end
+
+  def self.masked_sms_match?(target, displayed)
+    return false unless valid_sms_phone?(target) && displayed.is_a?(String) && displayed.bytesize <= 128
+    clean = displayed.gsub(/[ \u00a0\-()"]/, '')
+    return clean == target if valid_sms_phone?(clean)
+    # Apple's normal Fastlane matcher supports a country prefix, bullet mask,
+    # and the last two visible digits; Apple sometimes reports two extra dots.
+    match = /\A(\+[1-9][0-9]{0,2})(•{2,})([0-9]{2})\z/.match(clean)
+    return false unless match && target.start_with?(match[1]) && target.end_with?(match[3])
+    hidden_count = target.length - match[1].length - match[3].length
+    hidden_count.between?(match[2].length - 2, match[2].length)
+  end
+
+  def self.select_sms_option(options, target)
+    raise Failure, 'unsupported_authentication' unless options.is_a?(Array) && valid_sms_phone?(target)
+    matches = options.select { |displayed| masked_sms_match?(target, displayed) }
+    raise Failure, 'unsupported_authentication' unless matches.length == 1
+    matches.first
+  end
+
+  def self.select_trusted_sms_entry(body, target)
+    entries = body.is_a?(Hash) ? body['trustedPhoneNumbers'] : nil
+    unless entries.is_a?(Array) && entries.all? { |entry| entry.is_a?(Hash) }
+      raise Failure, 'unsupported_authentication'
+    end
+    displayed = select_sms_option(entries.map { |entry| entry['numberWithDialCode'] }, target)
+    entry = entries.find { |item| item['numberWithDialCode'] == displayed }
+    # Only select an existing Apple-trusted, SMS-capable entry. No number is
+    # registered, changed, or added and no alternative device is selected.
+    unless entry && entry['id'] && entry['pushMode'] == 'sms'
+      raise Failure, 'unsupported_authentication'
+    end
+    entry
   end
 
   # Disable persistent authentication and request logging before the first
@@ -134,12 +204,56 @@ module BeRealAppleID
       define_method(:cached_service_key) { nil }
       define_method(:cache_service_key) { |_key| nil }
       define_method(:ask_for_2fa_code) { |_prompt| channel.two_factor_code }
-      # Legacy four-digit 2SV and selection prompts require a separate explicit
-      # user flow; this worker never invents or chooses a trusted device.
+      # Use Fastlane's supported SMS-default environment option. Validate a
+      # unique trusted match before its ordinary SMS request is allowed.
+      define_method(:handle_two_factor) do |response, depth = 0|
+        target = ENV['SPACESHIP_2FA_SMS_DEFAULT_PHONE_NUMBER']
+        if target
+          entry = BeRealAppleID.select_trusted_sms_entry(response.body, target)
+          native_matches = response.body['trustedPhoneNumbers'].select do |candidate|
+            match_phone_to_masked_phone(target, candidate['numberWithDialCode'])
+          end
+          unless native_matches.length == 1 && native_matches.first.equal?(entry)
+            raise Failure, 'unsupported_authentication'
+          end
+        end
+        super(response, depth)
+      end
+      # Legacy four-digit 2SV requires a separate explicit user flow.
       define_method(:handle_two_step) { |_response| raise Failure, 'unsupported_authentication' }
-      define_method(:choose_phone_number) { |_options| raise Failure, 'unsupported_authentication' }
+      define_method(:choose_phone_number) do |options|
+        BeRealAppleID.select_sms_option(options, ENV['SPACESHIP_2FA_SMS_DEFAULT_PHONE_NUMBER'])
+      end
     end
     Spaceship::Client.prepend(hooks)
+    # These are existing methods in fastlane 2.241.0. Instrumentation only
+    # records their fixed phase; arguments, return values, and exceptions pass
+    # through unchanged to preserve the ordinary Apple authentication flow.
+    auth_stages = {
+      send_shared_login_request: 'login', store_session: 'session_trust',
+      fetch_olympus_session_after_signin: 'session_validation',
+      fetch_olympus_session: 'session_validation'
+    }
+    diagnostics = Module.new
+    auth_stages.each do |method, stage|
+      next unless Spaceship::Client.method_defined?(method) || Spaceship::Client.private_method_defined?(method)
+      diagnostics.define_method(method) do |*args, **kwargs, &block|
+        channel.stage = stage
+        super(*args, **kwargs, &block)
+      end
+    end
+    Spaceship::Client.prepend(diagnostics)
+    if defined?(Spaceship::PortalClient)
+      portal_diagnostics = Module.new
+      %i[send_login_request teams].each do |method|
+        next unless Spaceship::PortalClient.method_defined?(method) || Spaceship::PortalClient.private_method_defined?(method)
+        portal_diagnostics.define_method(method) do |*args, **kwargs, &block|
+          channel.stage = 'portal_session'
+          super(*args, **kwargs, &block)
+        end
+      end
+      Spaceship::PortalClient.prepend(portal_diagnostics)
+    end
   end
 
   def self.decode_profile(content)
@@ -165,6 +279,7 @@ module BeRealAppleID
     end
 
     def check_agreements(portal)
+      @channel.stage = 'agreement_read'
       response = portal.list_pending_agreements(language: 'en')
       if response.is_a?(Array)
         raise AgreementRequired unless response.empty?
@@ -192,6 +307,7 @@ module BeRealAppleID
     end
 
     def certificate(client)
+      @channel.stage = 'certificate_read'
       matches = @api::Certificate.all(client: client).filter_map do |resource|
         next unless %w[DISTRIBUTION IOS_DISTRIBUTION].include?(resource.certificate_type)
         next unless resource.certificate_content.is_a?(String)
@@ -214,6 +330,7 @@ module BeRealAppleID
     end
 
     def device(client)
+      @channel.stage = 'device_read'
       devices = @api::Device.all(client: client, filter: { platform: 'IOS', status: 'ENABLED' })
       enabled = devices.select { |item| item.platform == 'IOS' && item.status == 'ENABLED' }
       raise Failure, 'device_count_mismatch' unless enabled.length == 1
@@ -226,6 +343,7 @@ module BeRealAppleID
     end
 
     def valid_profile?(profile, identifier, der, selected_device)
+      @channel.stage = 'profile_validation'
       return false unless profile.profile_type == 'IOS_APP_ADHOC' && profile.profile_state == 'ACTIVE' &&
                           Time.parse(profile.expiration_date) > Time.now.utc
       decoded = @decode.call(profile.profile_content)
@@ -253,6 +371,7 @@ module BeRealAppleID
 
     def full_profile(client, profile)
       return profile if profile.profile_content.is_a?(String) && !profile.profile_content.empty?
+      @channel.stage = 'profile_read'
       unless profile.id.is_a?(String) && /\A[A-Za-z0-9-]{1,128}\z/.match?(profile.id)
         raise Failure, 'profile_verification_failed'
       end
@@ -264,6 +383,12 @@ module BeRealAppleID
 
     def run(credentials)
       credentials = BeRealAppleID.validate_credentials(credentials)
+      if @context.key?('sms_phone_number')
+        ENV['SPACESHIP_2FA_SMS_DEFAULT_PHONE_NUMBER'] = @context['sms_phone_number']
+      else
+        ENV.delete('SPACESHIP_2FA_SMS_DEFAULT_PHONE_NUMBER')
+      end
+      @channel.stage = 'login'
       client = @api::Client.login(credentials['apple_id'], credentials['password'],
                                   use_portal: true, use_tunes: false, portal_team_id: @team)
       raise Failure, 'team_mismatch' unless client.portal_team_id == @team
@@ -272,6 +397,7 @@ module BeRealAppleID
       selected_device = device(client)
       # Finish every read-only preflight before creating any Apple resource.
       bundles = TARGETS.to_h do |identifier|
+        @channel.stage = 'bundle_read'
         matches = @api::BundleId.all(client: client, filter: { identifier: identifier, platform: 'IOS' })
         raise Failure, 'ambiguous_bundle' if matches.length > 1
         existing = matches.first
@@ -280,6 +406,7 @@ module BeRealAppleID
         end
         [identifier, existing]
       end
+      @channel.stage = 'profile_read'
       profiles = @api::Profile.all(client: client, filter: { profileType: 'IOS_APP_ADHOC' })
       profiles = profiles.map { |profile| full_profile(client, profile) }
       existing_profiles = TARGETS.to_h do |identifier|
@@ -294,6 +421,7 @@ module BeRealAppleID
         if bundle
           counts[:reused_bundle_count] += 1
         else
+          @channel.stage = 'bundle_create'
           bundle = @api::BundleId.create(client: client, name: "BeReal493 #{identifier.split('.').last}",
                                          platform: 'IOS', identifier: identifier)
           counts[:created_bundle_count] += 1
@@ -304,6 +432,7 @@ module BeRealAppleID
         if existing_profiles[identifier]
           counts[:reused_profile_count] += 1
         else
+          @channel.stage = 'profile_create'
           created = @api::Profile.create(client: client, name: "BeReal493-AdHoc-#{identifier.split('.').last}",
                                          profile_type: 'IOS_APP_ADHOC', bundle_id_id: bundle.id,
                                          certificate_ids: [resource.id], device_ids: [selected_device.id])
@@ -317,6 +446,7 @@ module BeRealAppleID
       @channel.emit('provisioning_complete', counts)
       counts
     ensure
+      ENV.delete('SPACESHIP_2FA_SMS_DEFAULT_PHONE_NUMBER')
       credentials.each_value { |value| value.clear if value.is_a?(String) } if credentials.is_a?(Hash)
       client&.portal_client&.instance_variable_set(:@password, nil)
     end
@@ -329,6 +459,10 @@ module BeRealAppleID
     return 'permission_denied' if /AccessForbidden|InsufficientPermissions|Forbidden/.match?(name)
     return 'apple_service_unavailable' if /Timeout|ConnectionFailed|TooManyRequests|Gateway|InternalServer/.match?(name)
     'provisioning_failed'
+  end
+
+  def self.error_kind(error)
+    AUTH_ERROR_CLASSES.fetch(error.class.name.to_s, 'other')
   end
 
   def self.main(argv)
@@ -362,7 +496,7 @@ module BeRealAppleID
       if error.is_a?(AgreementRequired) || error.class.name.to_s.include?('ProgramLicenseAgreementUpdated')
         channel&.emit('agreement_review_required')
       else
-        channel&.emit('failure', reason: failure_reason(error))
+        channel&.failure(error)
       end
       1
     ensure
