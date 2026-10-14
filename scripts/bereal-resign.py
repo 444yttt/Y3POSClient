@@ -433,9 +433,13 @@ def concrete_entitlements(profile, identifier):
         if not isinstance(groups, list) or not groups: raise RuntimeError('Invalid profile keychain grants')
         concrete = []
         for group in groups:
+            # A profile is an allowlist (Apple TN3125). This system grant is
+            # unused by the modified app and must not become a claimed right.
+            if group == 'com.apple.token': continue
             if group == prefix + '.*': group = application_id
             if group not in (application_id, prefix + '.' + ROOT_ID): raise RuntimeError('Unapproved profile keychain scope')
             if group not in concrete: concrete.append(group)
+        if not concrete: raise RuntimeError('Profile has no scoped app keychain grant')
         entitlements['keychain-access-groups'] = concrete
     def has_wildcard(value):
         if isinstance(value, str): return '*' in value
