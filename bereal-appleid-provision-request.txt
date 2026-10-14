@@ -1,4 +1,4 @@
-Fresh scoped Apple SMS provisioning after confirmed UNIVERSAL bundle registration.
-Read-only audit confirmed the exact root identifier already exists as Apple's legitimate UNIVERSAL platform.
-Reuse that registration; create only remaining fixed BeReal493 identifiers and strict IOS_APP_ADHOC profiles for the current certificate and one enabled iOS device.
-Keep signing gated until five matching profiles are independently verified. Fresh challenge and SMS confirmation required; prior session/key cleaned up.
+User requested SMS confirmation resend after the prior temporary session expired without a code.
+Start a fresh ordinary Apple SMS authentication session; re-encrypt already authorized supplied login input to the new current challenge.
+Reuse the exact Universal root registration and create only remaining fixed BeReal493 IDs and strict iOS Ad Hoc profiles for the existing CI certificate and one enabled registered iOS device.
+Keep signing gated until all five scoped profiles are independently verified; prior session/key/replies cannot be reused.
