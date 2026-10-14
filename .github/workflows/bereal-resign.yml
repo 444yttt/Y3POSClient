@@ -57,7 +57,7 @@ jobs:
             python3 scripts/bereal-resign.py --probe-existing-profiles
           fi
       - name: Inspect existing Apple provisioning access without writes
-        if: ${{ hashFiles('scripts/bereal-access-diagnostics.py') != '' }}
+        if: ${{ always() && hashFiles('scripts/bereal-access-diagnostics.py') != '' }}
         env:
           BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 || secrets.DIST_P12_BASE64 }}
           P12_PASSWORD: ${{ secrets.P12_PASSWORD || secrets.DIST_P12_PASSWORD }}
@@ -93,7 +93,7 @@ jobs:
           retention-days: 30
           if-no-files-found: error
       - name: Save public provisioning readiness
-        if: ${{ always() && (hashFiles('bereal-signing-input.json') == '' || hashFiles('bereal-prepare-input-only.flag') != '') }}
+        if: ${{ always() && hashFiles('bereal-public/*.json') != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: BeReal493-provisioning-readiness-${{ github.sha }}

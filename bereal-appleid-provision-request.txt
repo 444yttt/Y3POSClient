@@ -1,3 +1,2 @@
-BeReal493 scoped Apple authentication retry
-Requested at 2026-10-14T00:02:10Z
-Prior challenge expired without credentials. Generate a fresh ephemeral public challenge.
+Fresh ordinary SMS authentication after user completed Apple agreement review.
+Requested at 2026-10-14T01:09:21Z; API registration remains HTTP403.
