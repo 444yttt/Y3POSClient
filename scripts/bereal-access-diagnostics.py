@@ -21,6 +21,36 @@ import tempfile
 import urllib.parse
 import uuid
 
+SCOPED_TARGETS = tuple("com.ayato.bereal493" + suffix for suffix in (
+    "", ".iMessageExtension", ".RealMojiNotificationContentExtension",
+    ".NotificationServiceExtension", ".Widgets"))
+REGISTRATION_PLATFORM_ENUM = frozenset(("IOS", "MAC_OS", "UNIVERSAL"))
+
+
+def exact_registration_platform_probe(api, target):
+    """Read exact scoped IDs without hiding server-normalized platforms.
+
+    The original IOS-only signing predicate remains unchanged. Returned API
+    objects stay private; public output contains only the fixed target and
+    counters/allowlisted platform labels, never unrelated identifiers.
+    """
+    if target not in SCOPED_TARGETS:
+        raise RuntimeError("Unapproved diagnostic bundle scope")
+    registrations = api.collection("/v1/bundleIds", {
+        "filter[identifier]": target, "fields[bundleIds]": "identifier,platform"})
+    matches = [item for item in registrations
+               if item.get("attributes", {}).get("identifier") == target]
+    ios = [item for item in matches if item.get("attributes", {}).get("platform") == "IOS"]
+    universal_count = sum(item.get("attributes", {}).get("platform") == "UNIVERSAL" for item in matches)
+    platforms = sorted({platform if isinstance(platform, str) and platform in REGISTRATION_PLATFORM_ENUM else "OTHER"
+                        for platform in (item.get("attributes", {}).get("platform") for item in matches)})
+    return matches, ios, {
+        "exact_registration_count": len(matches),
+        "strict_ios_registration_count": len(ios),
+        "exact_registration_platforms": platforms,
+        "universal_registration_count": universal_count,
+        "strict_ios_predicate_ignored_universal": universal_count > 0}
+
 
 def load_signer():
     spec = importlib.util.spec_from_file_location(
@@ -338,23 +368,19 @@ def audit_exact_scoped_profiles(signer, api, der, device):
         result = {"target_bundle_identifier": target,
                   "registration_read_allowed": False, "profile_read_allowed": False,
                   "exact_registration_count": None, "active_adhoc_profile_count": 0,
+                  "strict_ios_registration_count": None, "exact_registration_platforms": [],
+                  "universal_registration_count": None, "strict_ios_predicate_ignored_universal": False,
                   "valid_primary_certificate_exact_device_profile_count": 0,
                   "invalid_or_incompatible_profile_count": 0,
                   "exact_scoped_signing_ready": False,
                   "missing_registration_confirmed": False,
                   "missing_compatible_profile_confirmed": False}
         try:
-            registrations = api.collection("/v1/bundleIds", {
-                "filter[platform]": "IOS", "filter[identifier]": target,
-                "fields[bundleIds]": "identifier,platform"})
-            matches = [item for item in registrations
-                       if item.get("attributes", {}).get("identifier") == target
-                       and item.get("attributes", {}).get("platform") == "IOS"]
+            matches, ios_matches, platform_probe = exact_registration_platform_probe(api, target)
             result.update(registration_read_allowed=True,
-                          exact_registration_count=len(matches),
-                          missing_registration_confirmed=not matches)
-            if len(matches) == 1:
-                bundle_id = matches[0].get("id")
+                          missing_registration_confirmed=not matches, **platform_probe)
+            if len(matches) == len(ios_matches) == 1:
+                bundle_id = ios_matches[0].get("id")
                 if not isinstance(bundle_id, str) or not re.fullmatch("[A-Za-z0-9_-]{1,100}", bundle_id):
                     raise RuntimeError("Invalid scoped bundle resource identifier")
                 profiles = api.collection("/v1/bundleIds/" + bundle_id + "/profiles", {
@@ -421,13 +447,8 @@ def diagnose(signer, api, der, device, include_registration_checks=True):
     for target in targets if include_registration_checks else []:
         check = {"target_bundle_identifier": target}
         try:
-            registrations = api.collection("/v1/bundleIds", {
-                "filter[platform]": "IOS", "filter[identifier]": target,
-                "fields[bundleIds]": "identifier,platform"})
-            check.update(read_allowed=True, exact_registration_count=sum(
-                item.get("attributes", {}).get("identifier") == target
-                and item.get("attributes", {}).get("platform") == "IOS"
-                for item in registrations))
+            _, _, platform_probe = exact_registration_platform_probe(api, target)
+            check.update(read_allowed=True, **platform_probe)
         except Exception as exc:
             check.update(read_allowed=False, failure=safe_failure(exc))
         scoped_bundle_checks.append(check)
@@ -528,7 +549,7 @@ def main():
         receipt["alternate_identity"] = alternate
         receipt["scoped_profile_certificate_public_key_probe"] = probe_scoped_profile_public_keys(
             signer, api, der, device)
-        receipt["schema_version"] = 4
+        receipt["schema_version"] = 5
     output = Path("bereal-public")
     output.mkdir(exist_ok=True)
     (output / "apple-access-diagnostics.json").write_text(json.dumps(receipt, indent=2) + "\n")
