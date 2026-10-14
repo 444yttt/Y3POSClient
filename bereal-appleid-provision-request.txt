@@ -1,4 +1,4 @@
-BeReal493 scoped ordinary Apple SMS provisioning retry.
-Previous session ended at login with invalid_user_credentials; private input/session/key cleanup confirmed.
-Fresh encrypted credential reply required; do not reuse prior encrypted replies.
-Apple agreement accepted by user report. Provision only five exact BeReal493 targets using the existing CI certificate and enabled device.
+Fresh ordinary Apple SMS session after correcting exact BundleId filtering.
+Previous run reached bundle_read then ambiguous_bundle before resource writes; private credential/session/key cleanup confirmed.
+Create or reuse only the five fixed BeReal493 identities, with existing CI certificate and enabled device.
+Apple agreement accepted by user report. Fresh encrypted credential reply required; prior encrypted credentials and OTP cannot be reused.

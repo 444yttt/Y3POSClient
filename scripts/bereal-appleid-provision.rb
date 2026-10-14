@@ -398,12 +398,15 @@ module BeRealAppleID
       # Finish every read-only preflight before creating any Apple resource.
       bundles = TARGETS.to_h do |identifier|
         @channel.stage = 'bundle_read'
+        # The web-session API can return prefix/wide results for its filter;
+        # Fastlane's own BundleId.find also performs an exact local comparison.
+        # Check only this identifier, and do not create a duplicate when its
+        # exact registration is present on an unexpected platform.
         matches = @api::BundleId.all(client: client, filter: { identifier: identifier, platform: 'IOS' })
+                               .select { |bundle| bundle.identifier == identifier }
+        raise Failure, 'bundle_mismatch' if matches.any? { |bundle| bundle.platform != 'IOS' }
         raise Failure, 'ambiguous_bundle' if matches.length > 1
         existing = matches.first
-        if existing && (existing.identifier != identifier || existing.platform != 'IOS')
-          raise Failure, 'bundle_mismatch'
-        end
         [identifier, existing]
       end
       @channel.stage = 'profile_read'

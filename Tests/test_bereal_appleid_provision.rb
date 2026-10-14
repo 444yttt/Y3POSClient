@@ -63,6 +63,7 @@ def fixture
   end)
   api.const_set(:BundleId, Class.new do
     define_singleton_method(:all) do |**options|
+      next state[:bundles].dup if state[:bundle_filter_ignored]
       state[:bundles].select { |bundle| bundle.identifier == options[:filter][:identifier] }
     end
     define_singleton_method(:create) do |**options|
@@ -251,6 +252,58 @@ tests['ambiguous scoped registration halts before any writes'] = lambda do
   2.times { state[:bundles] << RESOURCE.new(id: 'DUP', identifier: BeRealAppleID::TARGETS.last, platform: 'IOS') }
   fails('ambiguous_bundle') { worker.run(creds) }
   assert(state[:calls].length == 1)
+end
+tests['ignored API filter with only unrelated and prefix candidates creates exactly approved scope'] = lambda do
+  worker, state, _output = fixture
+  state[:bundle_filter_ignored] = true
+  unrelated = [
+    RESOURCE.new(id: 'UNRELATED0', identifier: 'com.ayato.y3posclient', platform: 'IOS'),
+    RESOURCE.new(id: 'UNRELATED1', identifier: 'com.ayato.bereal493.extra', platform: 'IOS'),
+    RESOURCE.new(id: 'UNRELATED2', identifier: 'com.ayato.bereal493.Widgets.preview', platform: 'MAC_OS')
+  ]
+  state[:bundles].concat(unrelated)
+  snapshot = unrelated.map { |item| item.to_h.dup }
+  counts = worker.run(creds)
+  assert(counts[:created_bundle_count] == 5 && counts[:created_profile_count] == 5)
+  assert(unrelated.map(&:to_h) == snapshot)
+  created = state[:calls].select { |kind, _details| kind == :bundle_create }.map(&:last)
+  assert(created.map { |details| details[:identifier] }.sort == BeRealAppleID::TARGETS.sort)
+  assert(created.all? { |details| details[:platform] == 'IOS' })
+end
+tests['ignored API filter reuses exact scoped registrations and profiles without any writes'] = lambda do
+  worker, state, _output = fixture
+  state[:bundle_filter_ignored] = true
+  state[:bundles] << RESOURCE.new(id: 'UNRELATED', identifier: 'com.ayato.bereal493.extra', platform: 'IOS')
+  BeRealAppleID::TARGETS.each_with_index do |identifier, index|
+    state[:bundles] << RESOURCE.new(id: "SCOPED#{index}", identifier: identifier, platform: 'IOS')
+    new_profile(state, identifier)
+  end
+  counts = worker.run(creds)
+  assert(counts[:reused_bundle_count] == 5 && counts[:reused_profile_count] == 5)
+  assert(state[:calls].none? { |kind, _details| %i[bundle_create profile_create].include?(kind) })
+end
+tests['ignored API filter still rejects duplicate exact IOS registrations before any writes'] = lambda do
+  worker, state, _output = fixture
+  state[:bundle_filter_ignored] = true
+  state[:bundles] << RESOURCE.new(id: 'UNRELATED', identifier: 'com.other.app', platform: 'IOS')
+  2.times do |index|
+    state[:bundles] << RESOURCE.new(id: "EXACT#{index}", identifier: BeRealAppleID::TARGETS.last, platform: 'IOS')
+  end
+  fails('ambiguous_bundle') { worker.run(creds) }
+  assert(state[:calls].none? { |kind, _details| %i[bundle_create profile_create].include?(kind) })
+end
+tests['exact wrong platform registration is rejected before writes even with wide results'] = lambda do
+  [false, true].each do |also_ios|
+    worker, state, _output = fixture
+    state[:bundle_filter_ignored] = true
+    state[:bundles] << RESOURCE.new(id: 'UNRELATED', identifier: 'com.ayato.bereal493.extra', platform: 'IOS')
+    state[:bundles] << RESOURCE.new(id: 'WRONG', identifier: BeRealAppleID::TARGETS.last, platform: 'MAC_OS')
+    if also_ios
+      state[:bundles] << RESOURCE.new(id: 'EXACT', identifier: BeRealAppleID::TARGETS.last, platform: 'IOS')
+    end
+    fails('bundle_mismatch') { worker.run(creds) }
+    assert(state[:calls].none? { |kind, _details| %i[bundle_create profile_create].include?(kind) })
+  end
 end
 tests['created profile covering another device cannot complete'] = lambda do
   worker, state, output = fixture
