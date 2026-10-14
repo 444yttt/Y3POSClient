@@ -227,6 +227,11 @@ def probe_scoped_profile_public_keys(signer, api, primary_der, device):
                 counts["certificate_missing_from_current_apple_catalog_count"] += 1
             if len(matches) > 1:
                 counts["ambiguous_apple_certificate_match_count"] += 1
+            if len(matches) == 1:
+                if matches[0].get("certificateType") not in ("IOS_DISTRIBUTION", "DISTRIBUTION"):
+                    counts["apple_certificate_distribution_type_rejection_count"] += 1
+                if not signer.helper.is_future(matches[0].get("expirationDate")):
+                    counts["apple_certificate_metadata_expiry_rejection_count"] += 1
             if all(checks.values()):
                 counts["valid_scoped_profile_certificate_matching_primary_public_key_count"] += 1
         except Exception:
@@ -235,6 +240,7 @@ def probe_scoped_profile_public_keys(signer, api, primary_der, device):
             "profile_certificate_structure_rejection_count", "profile_decode_or_analysis_rejection_count",
             "unique_scoped_profile_certificate_count", "certificate_missing_from_current_apple_catalog_count",
             "ambiguous_apple_certificate_match_count", "profile_public_certificate_decode_rejection_count",
+            "apple_certificate_distribution_type_rejection_count", "apple_certificate_metadata_expiry_rejection_count",
             "valid_scoped_profile_certificate_matching_primary_public_key_count"]
     for check in ("primary_public_key_matches", "certificate_current_validity", "certificate_team_matches",
                   "apple_active_distribution_certificate_matches", "profile_all_targets_current_device_only"):
@@ -317,6 +323,84 @@ def profile_analysis(signer, resource, der, team, udid):
             "concrete_targets": concrete_targets,
             "compatible_with_current_device_included": standard and bool(concrete_targets),
             "compatible_with_current_device_only": standard and bool(concrete_targets) and checks["only_current_device"]}
+
+
+def audit_exact_scoped_profiles(signer, api, der, device):
+    """Prove exact signing readiness after an interrupted authentication job.
+
+    Only GETs and the production signer's strict profile validator are used.
+    A failed read is recorded as unknown; it never becomes a resource-creation
+    request or evidence that the authentication job performed no writes.
+    """
+    results = []
+    for suffix in signer.SAFE_SUFFIXES:
+        target = signer.ROOT_ID + suffix
+        result = {"target_bundle_identifier": target,
+                  "registration_read_allowed": False, "profile_read_allowed": False,
+                  "exact_registration_count": None, "active_adhoc_profile_count": 0,
+                  "valid_primary_certificate_exact_device_profile_count": 0,
+                  "invalid_or_incompatible_profile_count": 0,
+                  "exact_scoped_signing_ready": False,
+                  "missing_registration_confirmed": False,
+                  "missing_compatible_profile_confirmed": False}
+        try:
+            registrations = api.collection("/v1/bundleIds", {
+                "filter[platform]": "IOS", "filter[identifier]": target,
+                "fields[bundleIds]": "identifier,platform"})
+            matches = [item for item in registrations
+                       if item.get("attributes", {}).get("identifier") == target
+                       and item.get("attributes", {}).get("platform") == "IOS"]
+            result.update(registration_read_allowed=True,
+                          exact_registration_count=len(matches),
+                          missing_registration_confirmed=not matches)
+            if len(matches) == 1:
+                bundle_id = matches[0].get("id")
+                if not isinstance(bundle_id, str) or not re.fullmatch("[A-Za-z0-9_-]{1,100}", bundle_id):
+                    raise RuntimeError("Invalid scoped bundle resource identifier")
+                profiles = api.collection("/v1/bundleIds/" + bundle_id + "/profiles", {
+                    "fields[profiles]": "uuid,profileType,profileState,profileContent,expirationDate"})
+                result["profile_read_allowed"] = True
+                for candidate in profiles:
+                    attributes = candidate.get("attributes", {})
+                    if attributes.get("profileType") != "IOS_APP_ADHOC" or attributes.get("profileState") != "ACTIVE":
+                        continue
+                    result["active_adhoc_profile_count"] += 1
+                    # API failures propagate to the target's unknown result;
+                    # rejected CMS/permissions are counted without details.
+                    if not attributes.get("profileContent"):
+                        profile_id = candidate.get("id")
+                        if not isinstance(profile_id, str) or not re.fullmatch("[A-Za-z0-9_-]{1,100}", profile_id):
+                            raise RuntimeError("Invalid scoped profile resource identifier")
+                        candidate = api.request("GET", "/v1/profiles/" + profile_id)["data"]
+                    try:
+                        signer.validate_profile(candidate, der, os.environ["APPLE_TEAM_ID"], target,
+                                                device["attributes"]["udid"])
+                    except (RuntimeError, ValueError, TypeError, KeyError):
+                        result["invalid_or_incompatible_profile_count"] += 1
+                        continue
+                    result["valid_primary_certificate_exact_device_profile_count"] += 1
+                    # One fully validated existing profile proves this target;
+                    # do not let unrelated later fetches undo that evidence.
+                    break
+                result["exact_scoped_signing_ready"] = result["valid_primary_certificate_exact_device_profile_count"] > 0
+                result["missing_compatible_profile_confirmed"] = not result["exact_scoped_signing_ready"]
+        except Exception as exc:
+            result["failure"] = safe_failure(exc)
+            result["profile_read_allowed"] = False
+            result["exact_scoped_signing_ready"] = False
+            result["missing_compatible_profile_confirmed"] = False
+        results.append(result)
+    ready = sum(item["exact_scoped_signing_ready"] for item in results)
+    return {"mode": "strict_exact_scoped_profile_get_only_audit",
+            "all_five_exact_scoped_profiles_verified": ready == len(signer.SAFE_SUFFIXES) == 5,
+            "exact_scoped_signing_ready_count": ready,
+            "confirmed_missing_registration_count": sum(item["missing_registration_confirmed"] for item in results),
+            "confirmed_missing_compatible_profile_count": sum(item["missing_compatible_profile_confirmed"] for item in results),
+            "ambiguous_exact_registration_count": sum((item["exact_registration_count"] or 0) > 1 for item in results),
+            "unverified_scoped_identifier_count": len(results) - ready,
+            "apple_resources_created_or_modified": False,
+            "prior_authentication_resource_changes": "not inferred from authentication job outcome",
+            "scoped_results": results}
 
 
 def diagnose(signer, api, der, device, include_registration_checks=True):
@@ -413,6 +497,8 @@ def diagnose(signer, api, der, device, include_registration_checks=True):
     } for target in targets]
     receipt["all_targets_covered_with_current_device_included"] = all(included_coverage[t] > 0 for t in targets)
     receipt["all_targets_covered_with_current_device_only"] = all(exact_coverage[t] > 0 for t in targets)
+    if include_registration_checks:
+        receipt["exact_scoped_signing_readiness"] = audit_exact_scoped_profiles(signer, api, der, device)
     return receipt
 
 
@@ -442,7 +528,7 @@ def main():
         receipt["alternate_identity"] = alternate
         receipt["scoped_profile_certificate_public_key_probe"] = probe_scoped_profile_public_keys(
             signer, api, der, device)
-        receipt["schema_version"] = 3
+        receipt["schema_version"] = 4
     output = Path("bereal-public")
     output.mkdir(exist_ok=True)
     (output / "apple-access-diagnostics.json").write_text(json.dumps(receipt, indent=2) + "\n")
@@ -450,6 +536,10 @@ def main():
           + str(sum(item["compatible_current_device_included_profile_count"] > 0
                     for item in receipt["target_coverage"])) + "/5.")
     print("Published only scoped target identifiers and aggregate checks. No Apple resources were modified.")
+    readiness = receipt["exact_scoped_signing_readiness"]
+    print("Strict exact-scoped profiles verified against the primary certificate and registered device: "
+          + str(readiness["exact_scoped_signing_ready_count"]) + "/5; all-five proof="
+          + str(readiness["all_five_exact_scoped_profiles_verified"]).lower() + ".")
 
 
 if __name__ == "__main__":
