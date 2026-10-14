@@ -20,16 +20,17 @@ class ScopedPlatformProbeTests(unittest.TestCase):
     def setUp(self):
         self.target = diagnostic.SCOPED_TARGETS[0]
 
-    def test_reads_identifier_only_and_counts_universal_without_approving_signing(self):
+    def test_reads_identifier_only_and_counts_universal_ios_compatibility(self):
         api = mock.Mock()
         api.collection.return_value = [registration(self.target, 'UNIVERSAL')]
-        matches, ios, receipt = diagnostic.exact_registration_platform_probe(api, self.target)
+        matches, compatible, receipt = diagnostic.exact_registration_platform_probe(api, self.target)
         self.assertEqual(len(matches), 1)
-        self.assertEqual(ios, [])
+        self.assertEqual(len(compatible), 1)
         self.assertEqual(receipt, {'exact_registration_count': 1, 'strict_ios_registration_count': 0,
+                                 'compatible_registration_count': 1,
+                                 'registration_policy_allowed_platforms': ['IOS', 'UNIVERSAL'],
                                  'exact_registration_platforms': ['UNIVERSAL'],
-                                 'universal_registration_count': 1,
-                                 'strict_ios_predicate_ignored_universal': True})
+                                 'universal_registration_count': 1})
         filters = api.collection.call_args.args[1]
         self.assertEqual(filters['filter[identifier]'], self.target)
         self.assertNotIn('filter[platform]', filters)
@@ -43,9 +44,10 @@ class ScopedPlatformProbeTests(unittest.TestCase):
             registration(self.target, 'IOS'), registration(self.target, 'MAC_OS'),
             registration(self.target, 'UNIVERSAL'), registration(self.target, 'private-account-text'),
             registration(self.target, ['private-list'])]
-        matches, ios, receipt = diagnostic.exact_registration_platform_probe(api, self.target)
+        matches, compatible, receipt = diagnostic.exact_registration_platform_probe(api, self.target)
         self.assertEqual(len(matches), 5)
-        self.assertEqual(len(ios), 1)
+        self.assertEqual(len(compatible), 2)
+        self.assertEqual(receipt['strict_ios_registration_count'], 1)
         self.assertEqual(receipt['exact_registration_platforms'], ['IOS', 'MAC_OS', 'OTHER', 'UNIVERSAL'])
         serialized = json.dumps(receipt)
         self.assertNotIn('private', serialized.lower())
@@ -60,30 +62,71 @@ class ScopedPlatformProbeTests(unittest.TestCase):
     def test_empty_registration_is_distinct_from_unknown_or_universal(self):
         api = mock.Mock()
         api.collection.return_value = []
-        matches, ios, receipt = diagnostic.exact_registration_platform_probe(api, self.target)
+        matches, compatible, receipt = diagnostic.exact_registration_platform_probe(api, self.target)
         self.assertEqual(matches, [])
-        self.assertEqual(ios, [])
+        self.assertEqual(compatible, [])
         self.assertEqual(receipt['exact_registration_count'], 0)
         self.assertEqual(receipt['exact_registration_platforms'], [])
-        self.assertFalse(receipt['strict_ios_predicate_ignored_universal'])
+        self.assertEqual(receipt['compatible_registration_count'], 0)
+        self.assertNotIn('strict_ios_predicate_ignored_universal', receipt)
 
-    def test_audit_keeps_universal_registration_present_but_strict_profile_read_unapproved(self):
+    def audit_fixture(self):
         signer, api = mock.Mock(), mock.Mock()
         signer.ROOT_ID = 'com.ayato.bereal493'
         signer.SAFE_SUFFIXES = ('', '.iMessageExtension', '.RealMojiNotificationContentExtension',
                                 '.NotificationServiceExtension', '.Widgets')
-        api.collection.side_effect = lambda path, filters: [registration(filters['filter[identifier]'], 'UNIVERSAL')]
+        def collection(path, filters):
+            if path == '/v1/bundleIds':
+                return [registration(filters['filter[identifier]'], 'UNIVERSAL')]
+            return [{'id': 'PROFILE', 'attributes': {'profileType': 'IOS_APP_ADHOC',
+                                                    'profileState': 'ACTIVE', 'profileContent': 'opaque'}}]
+        api.collection.side_effect = collection
+        return signer, api
+
+    def test_universal_registration_requires_unchanged_strict_profile_proof(self):
+        signer, api = self.audit_fixture()
+        signer.validate_profile.side_effect = RuntimeError('incorrect certificate/device/CMS')
         with mock.patch.dict(os.environ, {'APPLE_TEAM_ID': 'ABCDEFGHIJ'}):
             receipt = diagnostic.audit_exact_scoped_profiles(signer, api, b'certificate',
                                                            {'attributes': {'udid': 'PRIVATE-DEVICE'}})
         self.assertFalse(receipt['all_five_exact_scoped_profiles_verified'])
         self.assertEqual(receipt['confirmed_missing_registration_count'], 0)
         self.assertEqual(receipt['exact_scoped_signing_ready_count'], 0)
-        self.assertEqual(api.collection.call_count, 5)
-        self.assertTrue(all(not item['profile_read_allowed'] and item['exact_registration_count'] == 1
-                            and item['strict_ios_predicate_ignored_universal'] for item in receipt['scoped_results']))
-        signer.validate_profile.assert_not_called()
+        self.assertEqual(api.collection.call_count, 10)
+        self.assertTrue(all(item['profile_read_allowed'] and item['exact_registration_count'] == 1
+                            and item['compatible_registration_count'] == 1
+                            and item['invalid_or_incompatible_profile_count'] == 1
+                            for item in receipt['scoped_results']))
+        self.assertEqual(signer.validate_profile.call_count, 5)
+        self.assertTrue(all(call.args[1] == b'certificate' and call.args[2] == 'ABCDEFGHIJ'
+                            and call.args[4] == 'PRIVATE-DEVICE' for call in signer.validate_profile.call_args_list))
         api.request.assert_not_called()
+
+    def test_all_five_universal_registrations_ready_only_after_each_profile_validates(self):
+        signer, api = self.audit_fixture()
+        signer.validate_profile.return_value = (b'validated-CMS', {})
+        with mock.patch.dict(os.environ, {'APPLE_TEAM_ID': 'ABCDEFGHIJ'}):
+            receipt = diagnostic.audit_exact_scoped_profiles(signer, api, b'certificate',
+                                                           {'attributes': {'udid': 'PRIVATE-DEVICE'}})
+        self.assertTrue(receipt['all_five_exact_scoped_profiles_verified'])
+        self.assertEqual(receipt['exact_scoped_signing_ready_count'], 5)
+        self.assertEqual(signer.validate_profile.call_count, 5)
+        self.assertEqual({call.args[3] for call in signer.validate_profile.call_args_list}, set(diagnostic.SCOPED_TARGETS))
+        self.assertEqual(receipt['registration_policy_allowed_platforms'], ['IOS', 'UNIVERSAL'])
+        api.request.assert_not_called()
+
+    def test_mac_only_or_duplicate_exact_registration_never_becomes_ios_profile_proof(self):
+        for platforms in (['MAC_OS'], ['UNIVERSAL', 'IOS'], ['UNIVERSAL', 'MAC_OS']):
+            signer, api = self.audit_fixture()
+            api.collection.side_effect = lambda path, filters: [registration(filters['filter[identifier]'], platform)
+                                                                for platform in platforms]
+            with self.subTest(platforms=platforms), mock.patch.dict(os.environ, {'APPLE_TEAM_ID': 'ABCDEFGHIJ'}):
+                receipt = diagnostic.audit_exact_scoped_profiles(signer, api, b'certificate',
+                                                               {'attributes': {'udid': 'PRIVATE-DEVICE'}})
+            self.assertFalse(receipt['all_five_exact_scoped_profiles_verified'])
+            self.assertEqual(receipt['exact_scoped_signing_ready_count'], 0)
+            signer.validate_profile.assert_not_called()
+            api.request.assert_not_called()
 
     def test_get_only_wrapper_rejects_all_resource_mutations(self):
         delegate = mock.Mock()
