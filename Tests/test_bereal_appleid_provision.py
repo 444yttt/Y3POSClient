@@ -344,6 +344,80 @@ class ReadOnlyValidationTests(unittest.TestCase):
         self.assertTrue(all(call.args[0] == 'GET' for call in api.request.call_args_list))
         signer.get_profile.assert_not_called()
 
+    def test_ios_and_universal_exact_registration_with_wide_results_keep_get_only_validation(self):
+        for platform in ('IOS', 'UNIVERSAL'):
+            with self.subTest(platform=platform):
+                api, signer = mock.Mock(), mock.Mock()
+                def collection(path, filters):
+                    if path == '/v1/bundleIds':
+                        self.assertEqual(set(filters), {'filter[identifier]'})
+                        identifier = filters['filter[identifier]']
+                        return [
+                            {'id': 'PREFIX', 'attributes': {'identifier': identifier + '.preview', 'platform': 'MAC_OS'}},
+                            {'id': 'UNRELATED', 'attributes': {'identifier': 'com.other.app', 'platform': 'UNKNOWN'}},
+                            {'id': 'SCOPED', 'attributes': {'identifier': identifier, 'platform': platform}},
+                        ]
+                    self.assertEqual(path, '/v1/bundleIds/SCOPED/profiles')
+                    return [{'id': 'PROFILE1', 'attributes': {
+                        'profileType': 'IOS_APP_ADHOC', 'profileState': 'ACTIVE', 'profileContent': 'opaque-CMS'}}]
+                api.collection.side_effect = collection
+                signer.validate_profile.return_value = (b'verified-CMS', {'validated': True})
+                signer.public_profile_receipt.side_effect = lambda identifier, profile, der: {'bundle_identifier': identifier}
+                results = relay.verify_scoped_profiles(
+                    signer, api, b'approved-certificate', 'ABCDEFGHIJ', {'attributes': {'udid': 'PRIVATE-DEVICE'}})
+                self.assertEqual({item['bundle_identifier'] for item in results}, set(relay.IDENTIFIERS))
+                self.assertEqual([call.args[3] for call in signer.validate_profile.call_args_list], list(relay.IDENTIFIERS))
+                self.assertTrue(all(call.args[1:3] == (b'approved-certificate', 'ABCDEFGHIJ')
+                                    and call.args[4] == 'PRIVATE-DEVICE'
+                                    for call in signer.validate_profile.call_args_list))
+                api.request.assert_not_called()
+                signer.get_profile.assert_not_called()
+
+    def test_exact_wrong_platform_or_ambiguous_registration_rejects_before_profile_reads(self):
+        for platforms in (['MAC_OS'], ['UNKNOWN'], [None], [''], ['IOS', 'UNIVERSAL'],
+                          ['UNIVERSAL', 'UNIVERSAL'], ['IOS', 'MAC_OS']):
+            with self.subTest(platforms=platforms):
+                api, signer = mock.Mock(), mock.Mock()
+                resources = [{'id': 'PREFIX', 'attributes': {
+                    'identifier': relay.ROOT_ID + '.preview', 'platform': 'UNIVERSAL'}}]
+                resources.extend({'id': 'BUNDLE' + str(index), 'attributes': {
+                    'identifier': relay.ROOT_ID, 'platform': platform}} for index, platform in enumerate(platforms))
+                api.collection.return_value = resources
+                with self.assertRaises(relay.RelayError) as raised:
+                    relay.verify_scoped_profiles(signer, api, b'certificate', 'ABCDEFGHIJ', {'attributes': {'udid': 'private'}})
+                self.assertEqual(raised.exception.reason, 'profiles_verification_failed')
+                api.collection.assert_called_once_with('/v1/bundleIds', {'filter[identifier]': relay.ROOT_ID})
+                api.request.assert_not_called()
+                signer.validate_profile.assert_not_called()
+                signer.get_profile.assert_not_called()
+
+    def test_wide_prefix_only_registration_is_not_an_exact_match(self):
+        api, signer = mock.Mock(), mock.Mock()
+        api.collection.return_value = [{'id': 'PREFIX', 'attributes': {
+            'identifier': relay.ROOT_ID + '.preview', 'platform': 'UNIVERSAL'}}]
+        with self.assertRaises(relay.RelayError):
+            relay.verify_scoped_profiles(signer, api, b'certificate', 'ABCDEFGHIJ', {'attributes': {'udid': 'private'}})
+        signer.validate_profile.assert_not_called()
+        api.request.assert_not_called()
+        signer.get_profile.assert_not_called()
+
+    def test_universal_metadata_cannot_bypass_profile_distribution_or_strict_validation(self):
+        for distribution in ('IOS_APP_ADHOC', 'IOS_APP_STORE', 'MAC_APP_DIRECT'):
+            with self.subTest(distribution=distribution):
+                api, signer = mock.Mock(), mock.Mock()
+                api.collection.side_effect = [
+                    [{'id': 'BUNDLE1', 'attributes': {'identifier': relay.ROOT_ID, 'platform': 'UNIVERSAL'}}],
+                    [{'id': 'PROFILE1', 'attributes': {
+                        'profileType': distribution, 'profileState': 'ACTIVE', 'profileContent': 'invalid-CMS'}}],
+                ]
+                signer.validate_profile.side_effect = RuntimeError('strict certificate/team/device/CMS rejection')
+                with self.assertRaises(relay.RelayError) as raised:
+                    relay.verify_scoped_profiles(signer, api, b'certificate', 'ABCDEFGHIJ', {'attributes': {'udid': 'private'}})
+                self.assertEqual(raised.exception.reason, 'profiles_verification_failed')
+                self.assertEqual(signer.validate_profile.call_count, 1 if distribution == 'IOS_APP_ADHOC' else 0)
+                api.request.assert_not_called()
+                signer.get_profile.assert_not_called()
+
     def test_invalid_profiles_never_fall_back_to_creation(self):
         api, signer = mock.Mock(), mock.Mock()
         api.collection.side_effect = [

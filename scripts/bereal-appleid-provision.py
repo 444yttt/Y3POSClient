@@ -36,6 +36,9 @@ ROOT_ID = 'com.ayato.bereal493'
 IDENTIFIERS = tuple(ROOT_ID + suffix for suffix in (
     '', '.iMessageExtension', '.RealMojiNotificationContentExtension',
     '.NotificationServiceExtension', '.Widgets'))
+# UNIVERSAL registrations include iOS. Embedded profiles and their entitlements
+# remain subject to the existing strict IOS_APP_ADHOC signer validation.
+IOS_BUNDLE_PLATFORMS = frozenset(('IOS', 'UNIVERSAL'))
 MAX_PACKET_BYTES = 16384
 MAX_CONTROL_BYTES = 8192
 MAX_DURATION_SECONDS = 2400
@@ -539,10 +542,10 @@ def verify_scoped_profiles(signer, api, der, team, device):
     results = []
     udid = device['attributes']['udid']
     for identifier in IDENTIFIERS:
-        bundles = api.collection('/v1/bundleIds', {'filter[platform]': 'IOS', 'filter[identifier]': identifier})
-        matches = [bundle for bundle in bundles if bundle.get('attributes', {}).get('identifier') == identifier
-                   and bundle.get('attributes', {}).get('platform') == 'IOS']
-        if len(matches) != 1:
+        bundles = api.collection('/v1/bundleIds', {'filter[identifier]': identifier})
+        matches = [bundle for bundle in bundles if bundle.get('attributes', {}).get('identifier') == identifier]
+        if (len(matches) != 1 or any(bundle.get('attributes', {}).get('platform') not in IOS_BUNDLE_PLATFORMS
+                                     for bundle in matches)):
             raise RelayError('profiles_verification_failed')
         bundle_id = matches[0].get('id')
         if not isinstance(bundle_id, str) or not re.fullmatch('[A-Za-z0-9_-]{1,100}', bundle_id):

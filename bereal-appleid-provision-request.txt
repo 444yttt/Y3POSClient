@@ -1,4 +1,4 @@
-Fresh ordinary Apple SMS session after correcting exact BundleId filtering.
-Previous run reached bundle_read then ambiguous_bundle before resource writes; private credential/session/key cleanup confirmed.
-Create or reuse only the five fixed BeReal493 identities, with existing CI certificate and enabled device.
-Apple agreement accepted by user report. Fresh encrypted credential reply required; prior encrypted credentials and OTP cannot be reused.
+Fresh scoped Apple SMS provisioning after confirmed UNIVERSAL bundle registration.
+Read-only audit confirmed the exact root identifier already exists as Apple's legitimate UNIVERSAL platform.
+Reuse that registration; create only remaining fixed BeReal493 identifiers and strict IOS_APP_ADHOC profiles for the current certificate and one enabled iOS device.
+Keep signing gated until five matching profiles are independently verified. Fresh challenge and SMS confirmation required; prior session/key cleaned up.

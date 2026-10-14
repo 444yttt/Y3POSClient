@@ -20,6 +20,9 @@ module BeRealAppleID
     com.ayato.bereal493.NotificationServiceExtension
     com.ayato.bereal493.Widgets
   ].freeze
+  # Apple's UNIVERSAL registration covers iOS as well as its other platforms;
+  # the provisioning profile itself must still be strictly IOS_APP_ADHOC.
+  IOS_BUNDLE_PLATFORMS = %w[IOS UNIVERSAL].freeze
   FAILURE_REASONS = %w[
     invalid_private_input invalid_context invalid_credentials control_unavailable
     two_factor_attempt_limit two_factor_timeout two_factor_input_rejected
@@ -402,9 +405,9 @@ module BeRealAppleID
         # Fastlane's own BundleId.find also performs an exact local comparison.
         # Check only this identifier, and do not create a duplicate when its
         # exact registration is present on an unexpected platform.
-        matches = @api::BundleId.all(client: client, filter: { identifier: identifier, platform: 'IOS' })
+        matches = @api::BundleId.all(client: client, filter: { identifier: identifier })
                                .select { |bundle| bundle.identifier == identifier }
-        raise Failure, 'bundle_mismatch' if matches.any? { |bundle| bundle.platform != 'IOS' }
+        raise Failure, 'bundle_mismatch' if matches.any? { |bundle| !IOS_BUNDLE_PLATFORMS.include?(bundle.platform) }
         raise Failure, 'ambiguous_bundle' if matches.length > 1
         existing = matches.first
         [identifier, existing]
@@ -429,7 +432,7 @@ module BeRealAppleID
                                          platform: 'IOS', identifier: identifier)
           counts[:created_bundle_count] += 1
         end
-        unless bundle && bundle.identifier == identifier && bundle.platform == 'IOS'
+        unless bundle && bundle.identifier == identifier && IOS_BUNDLE_PLATFORMS.include?(bundle.platform)
           raise Failure, 'bundle_mismatch'
         end
         if existing_profiles[identifier]

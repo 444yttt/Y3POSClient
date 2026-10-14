@@ -39,7 +39,7 @@ def fixture
             certs: [RESOURCE.new(id: 'CERT1', certificate_type: 'DISTRIBUTION',
               certificate_content: Base64.strict_encode64(der), expiration_date: (Time.now + 3600).iso8601)],
             devices: [RESOURCE.new(id: 'DEV1', platform: 'IOS', status: 'ENABLED', device_class: 'IPHONE', udid: 'test-device')],
-            bundles: [], profiles: [], grants: {}, der: der, context: context }
+            bundles: [], bundle_read_filters: [], profiles: [], grants: {}, der: der, context: context }
   api = Module.new
   api.const_set(:Client, Class.new do
     define_singleton_method(:login) do |user, password, **options|
@@ -63,12 +63,15 @@ def fixture
   end)
   api.const_set(:BundleId, Class.new do
     define_singleton_method(:all) do |**options|
+      state[:bundle_read_filters] << options[:filter].dup
       next state[:bundles].dup if state[:bundle_filter_ignored]
       state[:bundles].select { |bundle| bundle.identifier == options[:filter][:identifier] }
     end
     define_singleton_method(:create) do |**options|
       state[:calls] << [:bundle_create, options.reject { |key, _value| key == :client }]
-      bundle = RESOURCE.new(id: "BUNDLE#{state[:bundles].length}", identifier: options[:identifier], platform: options[:platform])
+      bundle = RESOURCE.new(id: "BUNDLE#{state[:bundles].length}",
+                            identifier: state[:created_bundle_identifier] || options[:identifier],
+                            platform: state[:created_bundle_platform] || options[:platform])
       state[:bundles] << bundle
       bundle
     end
@@ -206,6 +209,36 @@ tests['compatible profiles reused with no writes'] = lambda do
   assert(counts[:reused_bundle_count] == 5 && counts[:reused_profile_count] == 5)
   assert(state[:calls].none? { |kind, _details| %i[bundle_create profile_create].include?(kind) })
 end
+tests['exact UNIVERSAL registrations reuse IOS Ad Hoc profiles with identifier-only reads'] = lambda do
+  worker, state, _output = fixture
+  state[:bundle_filter_ignored] = true
+  state[:bundles] << RESOURCE.new(id: 'UNRELATED', identifier: 'com.other.app', platform: 'MAC_OS')
+  BeRealAppleID::TARGETS.each_with_index do |identifier, index|
+    state[:bundles] << RESOURCE.new(id: "UNIVERSAL#{index}", identifier: identifier, platform: 'UNIVERSAL')
+    new_profile(state, identifier)
+  end
+  counts = worker.run(creds)
+  assert(counts[:reused_bundle_count] == 5 && counts[:reused_profile_count] == 5)
+  assert(state[:calls].none? { |kind, _details| %i[bundle_create profile_create].include?(kind) })
+  assert(state[:bundle_read_filters] == BeRealAppleID::TARGETS.map { |identifier| { identifier: identifier } })
+end
+tests['IOS create requests accept Apple normalized UNIVERSAL registration responses'] = lambda do
+  worker, state, _output = fixture
+  state[:created_bundle_platform] = 'UNIVERSAL'
+  counts = worker.run(creds)
+  assert(counts[:created_bundle_count] == 5 && counts[:created_profile_count] == 5)
+  assert(state[:bundles].all? { |bundle| bundle.platform == 'UNIVERSAL' })
+  created = state[:calls].select { |kind, _details| kind == :bundle_create }.map(&:last)
+  assert(created.all? { |details| details[:platform] == 'IOS' })
+  profile_calls = state[:calls].select { |kind, _details| kind == :profile_create }.map(&:last)
+  assert(profile_calls.all? { |details| details[:profile_type] == 'IOS_APP_ADHOC' && details[:certificate_ids] == ['CERT1'] && details[:device_ids] == ['DEV1'] })
+end
+tests['normalized UNIVERSAL registration cannot weaken one-device profile validation'] = lambda do
+  worker, state, output = fixture
+  state[:created_bundle_platform], state[:invalid_created] = 'UNIVERSAL', true
+  fails('profile_verification_failed') { worker.run(creds) }
+  assert(output.string.empty?)
+end
 tests['unrelated profile not reused or modified'] = lambda do
   worker, state, _output = fixture
   unrelated = new_profile(state, 'com.existing.y3app')
@@ -303,6 +336,34 @@ tests['exact wrong platform registration is rejected before writes even with wid
     end
     fails('bundle_mismatch') { worker.run(creds) }
     assert(state[:calls].none? { |kind, _details| %i[bundle_create profile_create].include?(kind) })
+  end
+end
+tests['duplicate exact IOS and UNIVERSAL registrations halt before any writes'] = lambda do
+  worker, state, _output = fixture
+  state[:bundle_filter_ignored] = true
+  %w[IOS UNIVERSAL].each_with_index do |platform, index|
+    state[:bundles] << RESOURCE.new(id: "DUP#{index}", identifier: BeRealAppleID::TARGETS.last, platform: platform)
+  end
+  fails('ambiguous_bundle') { worker.run(creds) }
+  assert(state[:calls].none? { |kind, _details| %i[bundle_create profile_create].include?(kind) })
+end
+tests['unknown exact registration platforms halt before any writes'] = lambda do
+  [nil, '', 'VISION_OS', 'ios'].each do |platform|
+    worker, state, _output = fixture
+    state[:bundles] << RESOURCE.new(id: 'WRONG', identifier: BeRealAppleID::TARGETS.last, platform: platform)
+    fails('bundle_mismatch') { worker.run(creds) }
+    assert(state[:calls].none? { |kind, _details| %i[bundle_create profile_create].include?(kind) })
+  end
+end
+tests['created registration must retain exact identity and an IOS-capable platform before profile writes'] = lambda do
+  [{ created_bundle_platform: 'MAC_OS' }, { created_bundle_platform: 'UNKNOWN' },
+   { created_bundle_platform: 'UNIVERSAL', created_bundle_identifier: 'com.other.app' }].each do |change|
+    worker, state, output = fixture
+    state.merge!(change)
+    fails('bundle_mismatch') { worker.run(creds) }
+    assert(state[:calls].count { |kind, _details| kind == :bundle_create } == 1)
+    assert(state[:calls].none? { |kind, _details| kind == :profile_create })
+    assert(output.string.empty?)
   end
 end
 tests['created profile covering another device cannot complete'] = lambda do
