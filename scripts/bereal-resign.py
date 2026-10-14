@@ -59,15 +59,53 @@ def load_helper():
     return module
 
 
-def run(args, data=None):
+CODESIGN_STAGES = frozenset(('sign_macho', 'sign_framework', 'sign_extension', 'sign_root',
+    'verify_deep_root', 'verify_bundle', 'inspect_entitlements', 'extract_certificates'))
+
+
+def codesign_failure_reason(stderr):
+    """Classify native failures without publishing paths, identities or stderr."""
+    lowered = stderr.lower()
+    reasons = (
+        (b'errsecinternalcomponent', 'keychain_internal'),
+        (b'user interaction is not allowed', 'keychain_interaction'),
+        (b'no identity found', 'identity_not_found'),
+        (b'could not be found in the keychain', 'identity_not_found'),
+        (b'bundle format unrecognized', 'invalid_bundle'),
+        (b'resource fork', 'resource_metadata'),
+        (b'unsealed contents', 'unsealed_resources'),
+        (b'code object is not signed', 'unsigned_code'),
+        (b'no such file', 'missing_code_path'),
+        (b'file not found', 'missing_code_path'),
+        (b'code or signature have been modified', 'invalid_signature'),
+        (b'a sealed resource is missing or invalid', 'invalid_signature'),
+        (b'__linkedit', 'invalid_macho_linkedit'),
+        (b'invalid or unsupported format', 'invalid_macho'),
+    )
+    return next((reason for needle, reason in reasons if needle in lowered), 'unclassified')
+
+
+def run(args, data=None, error_stage=None):
     result = subprocess.run(args, input=data, capture_output=True)
     if result.returncode:
         # Only command names/subcommands are diagnostics. Arguments may contain
         # temporary passwords, and stderr from signing tools is never published.
         tool = Path(args[0]).name
+        if tool == 'codesign':
+            stage = error_stage if error_stage in CODESIGN_STAGES else 'unclassified'
+            raise RuntimeError('A signing/tool command failed: codesign stage=' + stage
+                + ' reason=' + codesign_failure_reason(result.stderr)
+                + ' (exit ' + str(result.returncode) + ')')
         operation = args[1] if tool in ('openssl', 'security') and len(args) > 1 else ''
         raise RuntimeError('A signing/tool command failed: ' + tool + ' ' + operation + ' (exit ' + str(result.returncode) + ')')
     return result.stdout
+
+
+def extract_signing_certificate(bundle, prefix):
+    # codesign has an optional prefix: a separate token becomes a code path.
+    run(['/usr/bin/codesign', '-d', '--extract-certificates=' + str(prefix), str(bundle)],
+        error_stage='extract_certificates')
+    return Path(str(prefix) + '0').read_bytes()
 
 
 def private(path, data):
@@ -799,10 +837,10 @@ def main(argv=None):
             fingerprint = hashlib.sha1(der).hexdigest().upper()
             identities = run(['/usr/bin/security', 'find-identity', '-v', '-p', 'codesigning', str(keychain)])
             if fingerprint.encode() not in identities: raise RuntimeError('Imported identity is not valid for code signing')
-            def sign(path, entitlements=None):
+            def sign(path, entitlements=None, stage='sign_macho'):
                 args = ['/usr/bin/codesign', '--force', '--sign', fingerprint, '--keychain', str(keychain), '--timestamp=none', '--generate-entitlement-der']
                 if entitlements: args += ['--entitlements', str(entitlements)]
-                run(args + [str(path)])
+                run(args + [str(path)], error_stage=stage)
             app_executables = {bundle / info['CFBundleExecutable'] for bundle,info,profile,ent in targets}
             macho_count = len(app_executables)
             for path in sorted(app.rglob('*'), key=lambda p:len(p.parts), reverse=True):
@@ -810,16 +848,15 @@ def main(argv=None):
                     with path.open('rb') as stream: magic = stream.read(4)
                     if magic in (b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xce', b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca', b'\xca\xfe\xba\xbf', b'\xbf\xba\xfe\xca'):
                         sign(path); macho_count += 1
-            for framework in sorted(app.rglob('*.framework'), key=lambda p:len(p.parts), reverse=True): sign(framework)
-            for bundle,info,profile,ent in sorted(targets,key=lambda t:len(t[0].parts),reverse=True): sign(bundle,ent)
-            run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)])
+            for framework in sorted(app.rglob('*.framework'), key=lambda p:len(p.parts), reverse=True): sign(framework, stage='sign_framework')
+            for bundle,info,profile,ent in sorted(targets,key=lambda t:len(t[0].parts),reverse=True): sign(bundle,ent, 'sign_root' if bundle == app else 'sign_extension')
+            run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], error_stage='verify_deep_root')
             for bundle,info,profile,ent in targets:
-                run(['/usr/bin/codesign', '--verify', '--strict', str(bundle)])
-                actual = plistlib.loads(run(['/usr/bin/codesign', '-d', '--entitlements', ':-', str(bundle)]))
+                run(['/usr/bin/codesign', '--verify', '--strict', str(bundle)], error_stage='verify_bundle')
+                actual = plistlib.loads(run(['/usr/bin/codesign', '-d', '--entitlements', ':-', str(bundle)], error_stage='inspect_entitlements'))
                 if actual != plistlib.loads(ent.read_bytes()): raise RuntimeError('Signed entitlements differ from verified profile')
                 certificate_prefix = root / ('verified-cert-' + str(targets.index((bundle,info,profile,ent))) + '-')
-                run(['/usr/bin/codesign', '-d', '--extract-certificates', str(certificate_prefix), str(bundle)])
-                if Path(str(certificate_prefix) + '0').read_bytes() != der: raise RuntimeError('Signed bundle certificate differs from the approved identity')
+                if extract_signing_certificate(bundle, certificate_prefix) != der: raise RuntimeError('Signed bundle certificate differs from the approved identity')
         finally:
             subprocess.run(['/usr/bin/security', 'delete-keychain', str(keychain)], capture_output=True)
         ipa = root / 'BeReal493-CameraRoll-SIGNED.ipa'
