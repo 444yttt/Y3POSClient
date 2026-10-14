@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import plistlib
 import unittest
 from unittest import mock
 
@@ -137,6 +138,69 @@ class ScopedPlatformProbeTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             api.request('GET', '/v1/bundleIds', {'unapproved': 'body'})
         delegate.request.assert_not_called()
+
+    def test_strict_validator_exceptions_map_only_exact_static_strings(self):
+        for message, code in diagnostic.STRICT_PROFILE_FAILURE_CODES.items():
+            with self.subTest(code=code):
+                self.assertEqual(diagnostic.strict_profile_failure_code(RuntimeError(message)), code)
+        self.assertEqual(diagnostic.strict_profile_failure_code(
+            RuntimeError('Unapproved profile keychain scope private-user@example.invalid')), 'other_validation_failure')
+        self.assertEqual(diagnostic.strict_profile_failure_code(ValueError('private password')), 'other_validation_failure')
+
+    def test_cms_keychain_hints_expose_only_categories_not_grant_values_or_udid(self):
+        signer = mock.Mock()
+        signer.helper.decode_base64.return_value = b'private-synthetic-CMS'
+        target = diagnostic.SCOPED_TARGETS[1]
+        prefix = 'PRIVATEPRE'
+        profile = {'ProvisionedDevices': ['PRIVATE-UDID'], 'Entitlements': {
+            'application-identifier': prefix + '.' + target,
+            'keychain-access-groups': [prefix + '.*', prefix + '.' + target,
+                                      prefix + '.' + diagnostic.SCOPED_TARGETS[0],
+                                      'com.apple.token', 'com.private.unrelated-keychain', {'private': 'shape'}]}}
+        signer.run.return_value = plistlib.dumps(profile)
+        result = diagnostic.profile_keychain_category_counts(signer, {'attributes': {'profileContent': 'opaque'}}, target)
+        self.assertEqual(result, {'team_wildcard': 1, 'exact_target': 1, 'authorized_root': 1,
+                                 'apple_token': 1, 'other': 2})
+        serialized = json.dumps(result)
+        self.assertNotIn(prefix, serialized)
+        self.assertNotIn(target, serialized)
+        self.assertNotIn('PRIVATE-UDID', serialized)
+        self.assertNotIn('unrelated-keychain', serialized)
+        self.assertEqual(signer.run.call_args.args[0], ['openssl', 'cms', '-verify', '-inform', 'DER', '-noverify'])
+
+    def test_actual_guard_failure_and_apple_token_hint_are_separate_and_never_make_ready(self):
+        signer, api = self.audit_fixture()
+        signer.validate_profile.side_effect = RuntimeError('Unapproved profile keychain scope')
+        signer.helper.decode_base64.return_value = b'private-synthetic-CMS'
+        signer.run.return_value = plistlib.dumps({'Entitlements': {
+            'application-identifier': 'ABCDEFGHIJ.' + self.target,
+            'keychain-access-groups': ['ABCDEFGHIJ.*', 'com.apple.token']}})
+        with mock.patch.dict(os.environ, {'APPLE_TEAM_ID': 'ABCDEFGHIJ'}):
+            receipt = diagnostic.audit_exact_scoped_profiles(signer, api, b'certificate',
+                                                           {'attributes': {'udid': 'PRIVATE-DEVICE'}})
+        self.assertFalse(receipt['all_five_exact_scoped_profiles_verified'])
+        self.assertEqual(receipt['strict_profile_failure_counts'], {'unapproved_keychain_grant': 5})
+        self.assertEqual(receipt['profile_keychain_grant_category_counts']['apple_token'], 5)
+        self.assertEqual(receipt['profile_keychain_grant_category_counts']['team_wildcard'], 5)
+        self.assertEqual(receipt['profile_keychain_hints_read_count'], 5)
+        self.assertEqual(receipt['profile_keychain_hints_unavailable_count'], 0)
+        self.assertNotIn('PRIVATE-DEVICE', json.dumps(receipt))
+        api.request.assert_not_called()
+
+    def test_failed_cms_hints_report_unavailable_without_dumping_private_error(self):
+        signer, api = self.audit_fixture()
+        signer.validate_profile.side_effect = RuntimeError('A signing/tool command failed: openssl cms (exit 1)')
+        signer.helper.decode_base64.return_value = b'private-synthetic-CMS'
+        signer.run.side_effect = RuntimeError('private raw response with account and session')
+        with mock.patch.dict(os.environ, {'APPLE_TEAM_ID': 'ABCDEFGHIJ'}):
+            receipt = diagnostic.audit_exact_scoped_profiles(signer, api, b'certificate',
+                                                           {'attributes': {'udid': 'PRIVATE-DEVICE'}})
+        self.assertEqual(receipt['strict_profile_failure_counts'], {'cms_validation_failed': 5})
+        self.assertEqual(receipt['profile_keychain_hints_read_count'], 0)
+        self.assertEqual(receipt['profile_keychain_hints_unavailable_count'], 5)
+        self.assertTrue(all(value == 0 for value in receipt['profile_keychain_grant_category_counts'].values()))
+        self.assertNotIn('private raw response', json.dumps(receipt))
+        api.request.assert_not_called()
 
 
 if __name__ == '__main__':

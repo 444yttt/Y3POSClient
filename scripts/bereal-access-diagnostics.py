@@ -26,6 +26,66 @@ SCOPED_TARGETS = tuple("com.ayato.bereal493" + suffix for suffix in (
     ".NotificationServiceExtension", ".Widgets"))
 REGISTRATION_PLATFORM_ENUM = frozenset(("IOS", "MAC_OS", "UNIVERSAL"))
 IOS_COMPATIBLE_REGISTRATION_PLATFORMS = ("IOS", "UNIVERSAL")
+STRICT_PROFILE_FAILURE_CODES = {
+    "Incorrect profile distribution type or state": "distribution_or_state_invalid",
+    "Invalid profile content": "profile_content_invalid",
+    "A signing/tool command failed: openssl cms (exit 1)": "cms_validation_failed",
+    "A signing/tool command failed: openssl cms (exit 2)": "cms_validation_failed",
+    "Profile identity is missing": "identity_missing",
+    "Profile identity mismatch": "identity_mismatch",
+    "Profile prefix mismatch": "application_prefix_mismatch",
+    "Profile entitlement mismatch": "team_or_debug_entitlement_mismatch",
+    "Profile certificate/expiry mismatch": "certificate_or_expiry_mismatch",
+    "Profile does not target only the registered device": "device_scope_mismatch",
+    "Invalid profile UUID": "uuid_invalid",
+    "Profile UUID differs from Apple metadata": "uuid_metadata_mismatch",
+    "Entitlement identity mismatch": "entitlement_identity_mismatch",
+    "Invalid profile keychain grants": "keychain_grants_invalid",
+    "Unapproved profile keychain scope": "unapproved_keychain_grant",
+    "Unsupported wildcard profile entitlement": "unsupported_wildcard_entitlement",
+}
+KEYCHAIN_CATEGORY_KEYS = ("team_wildcard", "exact_target", "authorized_root", "apple_token", "other")
+
+
+def strict_profile_failure_code(exc):
+    # Only exact, static strings emitted by the existing strict validator map
+    # to codes. Never copy raw exception text, class names or Apple responses.
+    return STRICT_PROFILE_FAILURE_CODES.get(str(exc), "other_validation_failure") if isinstance(exc, RuntimeError) else "other_validation_failure"
+
+
+def profile_keychain_category_counts(signer, resource, target):
+    """Inspect signed CMS privately and return only five category counters."""
+    if target not in SCOPED_TARGETS:
+        raise RuntimeError("Unapproved diagnostic bundle scope")
+    raw = signer.helper.decode_base64(resource.get("attributes", {}).get("profileContent", ""))
+    if not raw or len(raw) > 10 * 1024 * 1024:
+        raise RuntimeError("Invalid profile content")
+    profile = plistlib.loads(signer.run(["openssl", "cms", "-verify", "-inform", "DER", "-noverify"], raw))
+    entitlements = profile.get("Entitlements", {})
+    application_id = entitlements.get("application-identifier", "")
+    if not isinstance(application_id, str) or "." not in application_id:
+        raise RuntimeError("Profile identity is missing")
+    prefix = application_id.split(".", 1)[0]
+    exact_target = prefix + "." + target
+    authorized_root = prefix + "." + SCOPED_TARGETS[0]
+    groups = entitlements.get("keychain-access-groups", [])
+    counts = collections.Counter()
+    if not isinstance(groups, list):
+        counts["other"] += 1
+    else:
+        for grant in groups:
+            if grant == prefix + ".*":
+                category = "team_wildcard"
+            elif grant == exact_target:
+                category = "exact_target"
+            elif grant == authorized_root:
+                category = "authorized_root"
+            elif grant == "com.apple.token":
+                category = "apple_token"
+            else:
+                category = "other"
+            counts[category] += 1
+    return {category: counts[category] for category in KEYCHAIN_CATEGORY_KEYS}
 
 
 def exact_registration_platform_probe(api, target):
@@ -380,6 +440,9 @@ def audit_exact_scoped_profiles(signer, api, der, device):
                   "universal_registration_count": None,
                   "valid_primary_certificate_exact_device_profile_count": 0,
                   "invalid_or_incompatible_profile_count": 0,
+                  "strict_profile_failure_counts": {},
+                  "profile_keychain_grant_category_counts": {key: 0 for key in KEYCHAIN_CATEGORY_KEYS},
+                  "profile_keychain_hints_read_count": 0, "profile_keychain_hints_unavailable_count": 0,
                   "exact_scoped_signing_ready": False,
                   "missing_registration_confirmed": False,
                   "missing_compatible_profile_confirmed": False}
@@ -407,10 +470,19 @@ def audit_exact_scoped_profiles(signer, api, der, device):
                             raise RuntimeError("Invalid scoped profile resource identifier")
                         candidate = api.request("GET", "/v1/profiles/" + profile_id)["data"]
                     try:
+                        keychain_categories = profile_keychain_category_counts(signer, candidate, target)
+                        result["profile_keychain_hints_read_count"] += 1
+                        for category, count in keychain_categories.items():
+                            result["profile_keychain_grant_category_counts"][category] += count
+                    except Exception:
+                        result["profile_keychain_hints_unavailable_count"] += 1
+                    try:
                         signer.validate_profile(candidate, der, os.environ["APPLE_TEAM_ID"], target,
                                                 device["attributes"]["udid"])
-                    except (RuntimeError, ValueError, TypeError, KeyError):
+                    except (RuntimeError, ValueError, TypeError, KeyError) as exc:
                         result["invalid_or_incompatible_profile_count"] += 1
+                        code = strict_profile_failure_code(exc)
+                        result["strict_profile_failure_counts"][code] = result["strict_profile_failure_counts"].get(code, 0) + 1
                         continue
                     result["valid_primary_certificate_exact_device_profile_count"] += 1
                     # One fully validated existing profile proves this target;
@@ -425,10 +497,19 @@ def audit_exact_scoped_profiles(signer, api, der, device):
             result["missing_compatible_profile_confirmed"] = False
         results.append(result)
     ready = sum(item["exact_scoped_signing_ready"] for item in results)
+    failure_counts = collections.Counter()
+    keychain_counts = collections.Counter()
+    for item in results:
+        failure_counts.update(item["strict_profile_failure_counts"])
+        keychain_counts.update(item["profile_keychain_grant_category_counts"])
     return {"mode": "strict_exact_scoped_profile_get_only_audit",
             "registration_policy_allowed_platforms": list(IOS_COMPATIBLE_REGISTRATION_PLATFORMS),
             "all_five_exact_scoped_profiles_verified": ready == len(signer.SAFE_SUFFIXES) == 5,
             "exact_scoped_signing_ready_count": ready,
+            "strict_profile_failure_counts": dict(sorted(failure_counts.items())),
+            "profile_keychain_grant_category_counts": {key: keychain_counts[key] for key in KEYCHAIN_CATEGORY_KEYS},
+            "profile_keychain_hints_read_count": sum(item["profile_keychain_hints_read_count"] for item in results),
+            "profile_keychain_hints_unavailable_count": sum(item["profile_keychain_hints_unavailable_count"] for item in results),
             "confirmed_missing_registration_count": sum(item["missing_registration_confirmed"] for item in results),
             "confirmed_missing_compatible_profile_count": sum(item["missing_compatible_profile_confirmed"] for item in results),
             "ambiguous_exact_registration_count": sum((item["exact_registration_count"] or 0) > 1 for item in results),
@@ -559,7 +640,7 @@ def main():
         receipt["alternate_identity"] = alternate
         receipt["scoped_profile_certificate_public_key_probe"] = probe_scoped_profile_public_keys(
             signer, api, der, device)
-        receipt["schema_version"] = 6
+        receipt["schema_version"] = 7
     output = Path("bereal-public")
     output.mkdir(exist_ok=True)
     (output / "apple-access-diagnostics.json").write_text(json.dumps(receipt, indent=2) + "\n")
