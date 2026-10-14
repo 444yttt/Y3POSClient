@@ -1,2 +1,4 @@
-Fresh ordinary SMS authentication after user completed Apple agreement review.
-Requested at 2026-10-14T01:09:21Z; API registration remains HTTP403.
+BeReal493 scoped ordinary Apple SMS provisioning retry.
+Previous session ended at login with invalid_user_credentials; private input/session/key cleanup confirmed.
+Fresh encrypted credential reply required; do not reuse prior encrypted replies.
+Apple agreement accepted by user report. Provision only five exact BeReal493 targets using the existing CI certificate and enabled device.
