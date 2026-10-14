@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 import plistlib
 import re
 import secrets
+import shlex
 import shutil
 import ssl
 import stat
@@ -24,6 +25,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
+from contextlib import contextmanager
 
 ORIGINAL_SHA = 'e7d77665740c61f2b0d6eae21cb6052acd2add364db3f6b5fc9ef9198ac31cbc'
 SOURCE_COMMIT = '1f749cd1b2433d2a32694d5c91849d22f84f429f'
@@ -106,6 +108,32 @@ def extract_signing_certificate(bundle, prefix):
     run(['/usr/bin/codesign', '-d', '--extract-certificates=' + str(prefix), str(bundle)],
         error_stage='extract_certificates')
     return Path(str(prefix) + '0').read_bytes()
+
+
+@contextmanager
+def signing_keychain_scope(keychain, password, p12, p12_password, fingerprint):
+    # As in Y3's existing CI, preserve the exact original user list before
+    # create-keychain can alter it. codesign --keychain selects an identity,
+    # but its certificate-chain construction still uses this search list.
+    original = shlex.split(run(['/usr/bin/security', 'list-keychains', '-d', 'user']).decode())
+    try:
+        run(['/usr/bin/security', 'create-keychain', '-p', password, str(keychain)])
+        run(['/usr/bin/security', 'set-keychain-settings', '-lut', '21600', str(keychain)])
+        run(['/usr/bin/security', 'unlock-keychain', '-p', password, str(keychain)])
+        run(['/usr/bin/security', 'import', str(p12), '-P', p12_password, '-t', 'cert', '-f', 'pkcs12', '-k', str(keychain), '-T', '/usr/bin/codesign', '-T', '/usr/bin/security'])
+        run(['/usr/bin/security', 'set-key-partition-list', '-S', 'apple-tool:,apple:,codesign:', '-s', '-k', password, str(keychain)])
+        selected = list(dict.fromkeys([str(keychain), *original]))
+        run(['/usr/bin/security', 'list-keychains', '-d', 'user', '-s', *selected])
+        identities = run(['/usr/bin/security', 'find-identity', '-v', '-p', 'codesigning', str(keychain)])
+        if fingerprint.encode() not in identities: raise RuntimeError('Imported identity is not valid for code signing')
+        yield
+    finally:
+        try:
+            run(['/usr/bin/security', 'list-keychains', '-d', 'user', '-s', *original])
+        finally:
+            # Always remove private keychain assets, including after an import,
+            # signing or search-list restoration failure. Never publish output.
+            subprocess.run(['/usr/bin/security', 'delete-keychain', str(keychain)], capture_output=True)
 
 
 def private(path, data):
@@ -828,15 +856,8 @@ def main(argv=None):
         for bundle, info, profile, ent in targets: (bundle / 'Info.plist').write_bytes(plistlib.dumps(remap(info)))
         print('Prepared matching Ad Hoc profiles for the root app and four extensions.')
         keychain = root / 'signing.keychain-db'; password = secrets.token_urlsafe(32)
-        try:
-            run(['/usr/bin/security', 'create-keychain', '-p', password, str(keychain)])
-            run(['/usr/bin/security', 'set-keychain-settings', '-lut', '21600', str(keychain)])
-            run(['/usr/bin/security', 'unlock-keychain', '-p', password, str(keychain)])
-            run(['/usr/bin/security', 'import', str(p12), '-P', os.environ[signing_password_env], '-t', 'cert', '-f', 'pkcs12', '-k', str(keychain), '-T', '/usr/bin/codesign', '-T', '/usr/bin/security'])
-            run(['/usr/bin/security', 'set-key-partition-list', '-S', 'apple-tool:,apple:,codesign:', '-s', '-k', password, str(keychain)])
-            fingerprint = hashlib.sha1(der).hexdigest().upper()
-            identities = run(['/usr/bin/security', 'find-identity', '-v', '-p', 'codesigning', str(keychain)])
-            if fingerprint.encode() not in identities: raise RuntimeError('Imported identity is not valid for code signing')
+        fingerprint = hashlib.sha1(der).hexdigest().upper()
+        with signing_keychain_scope(keychain, password, p12, os.environ[signing_password_env], fingerprint):
             def sign(path, entitlements=None, stage='sign_macho'):
                 args = ['/usr/bin/codesign', '--force', '--sign', fingerprint, '--keychain', str(keychain), '--timestamp=none', '--generate-entitlement-der']
                 if entitlements: args += ['--entitlements', str(entitlements)]
@@ -857,8 +878,6 @@ def main(argv=None):
                 if actual != plistlib.loads(ent.read_bytes()): raise RuntimeError('Signed entitlements differ from verified profile')
                 certificate_prefix = root / ('verified-cert-' + str(targets.index((bundle,info,profile,ent))) + '-')
                 if extract_signing_certificate(bundle, certificate_prefix) != der: raise RuntimeError('Signed bundle certificate differs from the approved identity')
-        finally:
-            subprocess.run(['/usr/bin/security', 'delete-keychain', str(keychain)], capture_output=True)
         ipa = root / 'BeReal493-CameraRoll-SIGNED.ipa'
         with zipfile.ZipFile(ipa,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6) as archive:
             for path in sorted((payload / 'Payload').rglob('*')):
