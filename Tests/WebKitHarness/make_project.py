@@ -6,17 +6,28 @@ import hashlib
 import plistlib
 import shutil
 from pathlib import Path
+from xml.sax.saxutils import quoteattr
 
 
 def identifier(value):
     return hashlib.sha256(value.encode()).hexdigest()[:24].upper()
 
 
-def generate(app_source, output):
+def generate(app_source, output, simulator_swift_libraries=None):
     harness = Path(__file__).resolve().parent
     source = app_source / "Y3Client" / "LegacySiteSupport.swift"
     if not source.is_file():
         raise SystemExit("App source must contain Y3Client/LegacySiteSupport.swift")
+    launch_environment = ""
+    if simulator_swift_libraries is not None:
+        simulator_swift_libraries = simulator_swift_libraries.resolve()
+        if not (simulator_swift_libraries / "libswiftWebKit.dylib").is_file():
+            raise SystemExit("The selected simulator Swift directory must contain libswiftWebKit.dylib")
+        launch_environment = (
+            '<EnvironmentVariables><EnvironmentVariable key="DYLD_FALLBACK_LIBRARY_PATH" value='
+            + quoteattr(str(simulator_swift_libraries))
+            + ' isEnabled="YES"/></EnvironmentVariables>'
+        )
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
         raise SystemExit("Harness output must be an empty directory")
@@ -116,7 +127,7 @@ def generate(app_source, output):
 <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">{test_ref}</BuildActionEntry>
 </BuildActionEntries></BuildAction>
 <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES"><Testables><TestableReference skipped="NO">{test_ref}</TestableReference></Testables></TestAction>
-<LaunchAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" launchStyle="0" useCustomWorkingDirectory="NO" ignoresPersistentStateOnLaunch="NO" debugDocumentVersioning="YES" allowLocationSimulation="YES"><BuildableProductRunnable runnableDebuggingMode="0">{app_ref}</BuildableProductRunnable></LaunchAction>
+<LaunchAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" launchStyle="0" useCustomWorkingDirectory="NO" ignoresPersistentStateOnLaunch="NO" debugDocumentVersioning="YES" allowLocationSimulation="YES"><BuildableProductRunnable runnableDebuggingMode="0">{app_ref}</BuildableProductRunnable>{launch_environment}</LaunchAction>
 <AnalyzeAction buildConfiguration="Debug"/><ArchiveAction buildConfiguration="Debug" revealArchiveInOrganizer="YES"/>
 </Scheme>'''
     (schemes / "WKRuntimeHarness.xcscheme").write_text(scheme)
@@ -127,5 +138,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--app-source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--simulator-swift-libraries", type=Path,
+                        help="Test-only runtime Cryptex Swift directory containing libswiftWebKit.dylib")
     args = parser.parse_args()
-    generate(args.app_source.resolve(), args.output.resolve())
+    generate(args.app_source.resolve(), args.output.resolve(), args.simulator_swift_libraries)
