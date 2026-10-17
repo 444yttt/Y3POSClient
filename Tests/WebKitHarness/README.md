@@ -28,6 +28,7 @@ The matrix is constructed by the fixture's own `window.load` listener. The produ
 - Frozen table header/body scroll in both directions; a narrower header cannot pull the wider body away from its final columns.
 - The shared fictional compound form retains its malformed parser-assigned FORM ownership, every ancestor and duplicate field, aligned dates/five-slot rows, accessible names and unchanged datepicker at 390/320px; helper/selector handlers and all duplicate POST values remain intact.
 - Interactive row-action reports scroll in place at 320px, including nested layouts and frozen header variants, while retaining original table/form/control nodes and duplicate-field POSTs.
+- The same interactive-report test covers a 24-row checkbox `_8` helper: its report role, row names, bounded width, original five-selection limit, back handler, selected codes and duplicate hidden-token POST values remain intact.
 
 These tests must pass under `xcodebuild test` on an actual iOS Simulator. Linux grammar/project checks or a Chromium run do not count as their execution result. The selected runtime is recorded in `devices.json`; Xcode 16.4 normally runs the iOS 18.5 simulator. Testing an iOS 17 runtime requires installing/selecting that runtime separately.
 

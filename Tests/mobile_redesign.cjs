@@ -33,11 +33,13 @@ const pages = {
   frozenActionReport: '/scripts/verona/print/prtz094_2.asp',
   splitActionReport: '/scripts/verona/print/prtz093_2.asp',
   summaryPager: '/scripts/verona/print/prtz092_2.asp',
+  selectionPicker: '/scripts/verona/print/prtz090_8.asp',
   stock: '/scripts/verona/dwh/prtz011_2.asp',
   daily: '/scripts/verona/dwh/prtz030_2_2.asp',
 };
 const fixtures = new Map([
   [origin + pages.compoundForm, fs.readFileSync(path.join(__dirname,'fixtures/compound-form.html'),'utf8')],
+  [origin + pages.selectionPicker, fs.readFileSync(path.join(__dirname,'fixtures/maintenance-selection-picker.html'),'utf8')],
   ...[['actionReport','action-report'],['nestedActionReport','nested-action-report'],['clonedActionReport','frozen-action-clone'],['frozenActionReport','frozen-action-header'],['splitActionReport','frozen-action-split']].map(([kind,file])=>[origin+pages[kind],fs.readFileSync(path.join(__dirname,'fixtures/maintenance-'+file+'.html'),'utf8')]),
   [origin + pages.menu, shell(`
     <script>function funcLinkSend(name,color){window.fixtureMenuClicks=(window.fixtureMenuClicks||0)+1;document.forms.frmForm.Title.value=name;document.forms.frmForm.ColorSEQ.value=color;document.forms.frmForm.requestSubmit();return false}</script>
@@ -124,6 +126,7 @@ const fixtures = new Map([
   [origin + '/fixture/detail', shell('<p>架空商品詳細</p>')],
   [origin + '/fixture/compound-post', shell('<p>架空複合条件POST受信</p>')],
   [origin + '/fixture/post', shell('<p>架空操作付き照会POST受信</p>')],
+  [origin + '/fixture/selection-post', shell('<p>架空の複数選択POST受信</p>')],
 ]);
 const framedCondition = '/scripts/verona/print/prtz030_1_1.asp';
 const framedResult = '/scripts/verona/print/prtz030_2_2.asp';
@@ -384,6 +387,41 @@ async function main() {
           const posted=new URLSearchParams((await pending).postData());
           assert.equal(posted.get('PageNum'),'2');assert.equal(posted.get('fixture_token'),'fictional-page-token');assert.equal(posted.has('previous'),false);
         }
+        if(kind==='selectionPicker'){
+          const table=page.locator('#fixture-selection-table');
+          assert.equal(await table.getAttribute('data-y3client-selection-table'),'');
+          assert.equal(await table.getAttribute('role'),null);
+          const preserved=()=>page.evaluate(()=>fixtureSelectionOriginal.controls.every((control,index)=>control.form===fixtureSelectionOriginal.form&&control.onclick===fixtureSelectionOriginal.handlers[index]&&fixtureSelectionOriginal.ancestors[index].every((ancestor,depth)=>{let current=control.parentElement;for(let i=0;i<depth;i++)current=current.parentElement;return ancestor===current;}))&&Array.from(fixtureSelectionOriginal.form.elements).every((control,index)=>control===fixtureSelectionOriginal.controls[index]));
+          assert.equal(await preserved(),true,'Checkbox pickers must retain their original parser-owned form, handlers and ancestors');
+          assert.equal(await page.locator('input[name="fixture_codes"]').count(),24);
+          const bounds=await table.evaluate(element=>{const rect=element.getBoundingClientRect();return{left:rect.left,right:rect.right,scroll:element.scrollWidth,client:element.clientWidth};});
+          assert(bounds.left>=0&&bounds.right<=width+1&&bounds.scroll>bounds.client);
+          const counter=await page.locator('#elements-limit').evaluate(element=>({position:getComputedStyle(element).position,right:element.getBoundingClientRect().right}));
+          assert.equal(counter.position,'static');assert(counter.right<=width+1,'The remaining-count caption must not overflow beside the report');
+          assert.equal(await page.locator('#fixture-picker-01,label[for="fixture-picker-01"]').evaluateAll(nodes=>nodes.every(node=>node.getBoundingClientRect().height>=44&&node.getBoundingClientRect().width>=44)),true);
+          for(let i=1;i<=6;i++)await page.locator('label[for="fixture-picker-'+String(i).padStart(2,'0')+'"]').click();
+          assert.equal(await page.locator('#fixture-remaining').textContent(),'-1');
+          const postCount=requests.filter(request=>request.url===origin+'/fixture/selection-post').length;
+          await page.locator('#fixture-picker-register').click();
+          assert.equal(await page.evaluate(()=>fixtureLimitRejections),1,'Presentation must preserve the original five-item selection limit');
+          await page.waitForTimeout(60);
+          assert.equal(requests.filter(request=>request.url===origin+'/fixture/selection-post').length,postCount);
+          await page.locator('#fixture-picker-06').uncheck();
+          await page.evaluate(scripts.adapt);
+          assert.equal(await preserved(),true);
+          assert.equal(await page.locator('input[name="fixture_codes"]:checked').count(),5,'Reapplying presentation must preserve selected choices');
+          const pending=page.waitForRequest(request=>request.url()===origin+'/fixture/selection-post');
+          await page.locator('#fixture-picker-register').click();
+          const posted=new URLSearchParams((await pending).postData());
+          assert.deepEqual(posted.getAll('fixture_codes'),['FX01','FX02','FX03','FX04','FX05']);
+          assert.deepEqual(posted.getAll('fixture_token'),['fictional-picker-token-a','fictional-picker-token-b']);
+          assert.equal(posted.get('fixture_register'),'登録');
+          assert.equal(await page.evaluate(()=>fixtureAcceptedSubmissions),1);
+          assert.equal(await page.evaluate(()=>fixtureSelectionChanges),7);
+          await page.locator('#fixture-picker-back').click();
+          assert.equal(await page.evaluate(()=>fixtureBackCalls),1);
+          assert.equal(requests.filter(request=>request.url===origin+'/fixture/selection-post').length,postCount+1,'Back must retain its original behavior without another submit');
+        }
         if (/ActionReport$|^actionReport$/.test(kind)) {
           const tableID=({actionReport:'basic',nestedActionReport:'nested',clonedActionReport:'action-body',frozenActionReport:'plain-body',splitActionReport:'plain-body'})[kind];
           const table=page.locator('#'+tableID);
@@ -468,6 +506,10 @@ async function main() {
       for (const [kind, pathname] of Object.entries(pages)) {
         await page.goto(origin + pathname);
         await snapshotOriginals(page);
+        if(kind==='selectionPicker')await page.evaluate(()=>{
+          const form=document.getElementById('fixture-selection-form'),controls=Array.from(form.elements);
+          window.fixtureSelectionOriginal={form,controls,handlers:controls.map(control=>control.onclick),ancestors:controls.map(control=>{const result=[];for(let ancestor=control.parentElement;ancestor;ancestor=ancestor.parentElement)result.push(ancestor);return result;})};
+        });
         if(/ActionReport$|^actionReport$/.test(kind))await page.evaluate(()=>{
           const controls=Array.from(document.querySelectorAll('input'));
           window.fixtureAction={controls,owners:controls.map(control=>control.form),ancestors:controls.map(control=>{const ancestors=[];for(let parent=control.parentElement;parent;parent=parent.parentElement)ancestors.push(parent);return ancestors;}),forms:Array.from(document.forms).map(form=>[form,Array.from(form.elements)])};

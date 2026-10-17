@@ -98,13 +98,18 @@ private final class FixtureSession {
 final class WebKitRuntimeTests: XCTestCase {
     @MainActor
     private func eventually(_ view: WKWebView, _ expression: String,
-                            file: StaticString = #filePath, line: UInt = #line) async throws {
+                            diagnostics: String? = nil, file: StaticString = #filePath, line: UInt = #line) async throws {
         var lastError = "condition was false"
         for _ in 0 ..< 400 {
             do {
                 if (try await view.evaluateJavaScript(expression) as? Bool) == true { return }
             } catch { lastError = error.localizedDescription }
             try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        if let diagnostics {
+            if let details = try? await view.evaluateJavaScript(diagnostics) as? String {
+                lastError += "; " + details
+            }
         }
         XCTFail("WK condition timed out: \(lastError)", file: file, line: line)
         throw NSError(domain: "WKFixtureTimeout", code: 1)
@@ -439,21 +444,42 @@ final class WebKitRuntimeTests: XCTestCase {
                 if(ids.length)return ids.map(id=>doc.getElementById(id)?.textContent.trim()||'').join(' ').trim();
                 return Array.from(control.labels||[]).map(label=>label.textContent.trim()).join(' ').trim();
               };
+              const describe=node=>{const rect=node.getBoundingClientRect(),style=win.getComputedStyle(node);return{
+                id:node.id,tag:node.tagName,name:node.matches('input,select')?name(node):node.textContent.trim(),
+                left:rect.left,right:rect.right,top:rect.top,height:rect.height,width:rect.width,
+                minHeight:style.minHeight,display:style.display,form:node.form?.id};};
+              window.fixtureSearchDiagnostics=JSON.stringify({viewport:win.innerWidth,frameHeight:win.innerHeight,
+                documentWidth:doc.documentElement.scrollWidth,form:{id:form?.id,target:form?.target,method:form?.method},
+                controls:Array.from(doc.querySelectorAll('input:not([type="hidden"]),select,label')).map(describe),
+                labels:{store:name(store),product:name(radio),group:name(doc.getElementById('group-store'))}});
               if(!form || store.form!==form || radio.form!==form || form.target!=='prtz030_2' ||
                  form.method.toLowerCase()!=='post' || name(store)!=='店舗' || name(radio)!=='商品別' ||
                  name(doc.getElementById('group-store'))!=='店舗別')return false;
-              const targets=[store,doc.getElementById('search-submit'),...Array.from(doc.querySelectorAll('label')).filter(label=>label.control?.type==='radio')];
-              if(targets.length<4 || !targets.every(node=>{
-                const rect=node.getBoundingClientRect();
-                return rect.left>=0 && rect.right<=win.innerWidth+1 && rect.height>=44;
-              }) || doc.documentElement.scrollWidth>win.innerWidth+1)return false;
-              store.value='west';store.dispatchEvent(new win.Event('change',{bubbles:true}));radio.click();
-              doc.getElementById('search-submit').click();
-              return win.fixtureSelectChanges===1 && win.fixtureRadioClicks===1 &&
-                win.fixtureSearchSubmissions===1 && radio.checked;
+              return true;
             })()
             """) as? Bool
-        XCTAssertEqual(prepared, true, "Select/radio-only search controls need names, phone widths and original handlers")
+        let searchDiagnostics = (try await session.view.evaluateJavaScript("window.fixtureSearchDiagnostics || 'diagnostics unavailable'")) as? String ?? "diagnostics unavailable"
+        XCTAssertEqual(prepared, true, "Select/radio ownership and accessible names must survive: \(searchDiagnostics)")
+        do {
+            try await eventually(session.view, """
+                (()=>{
+                  const win=frames[0],doc=win.document;
+                  const targets=[doc.getElementById('search-store'),doc.getElementById('search-submit'),...Array.from(doc.querySelectorAll('label')).filter(label=>label.control?.type==='radio')];
+                  const bounds=targets.map(node=>{const rect=node.getBoundingClientRect();return{id:node.id,left:rect.left,right:rect.right,top:rect.top,height:rect.height};});
+                  window.fixtureSearchLastGeometry=JSON.stringify({viewport:win.innerWidth,frameHeight:win.innerHeight,documentWidth:doc.documentElement.scrollWidth,bounds});
+                  return targets.length>=4 && bounds.every(rect=>rect.left>=0 && rect.right<=win.innerWidth+1 && rect.height>=44) && doc.documentElement.scrollWidth<=win.innerWidth+1;
+                })()
+                """, diagnostics: "JSON.stringify({first:window.fixtureSearchDiagnostics,last:window.fixtureSearchLastGeometry})")
+        } catch { /* The recorded geometry failure must not prevent the independent original POST check. */ }
+        let activated = try await session.view.evaluateJavaScript("""
+            (()=>{
+              const win=frames[0],doc=win.document,store=doc.getElementById('search-store'),radio=doc.getElementById('group-product');
+              store.value='west';store.dispatchEvent(new win.Event('change',{bubbles:true}));radio.click();
+              doc.getElementById('search-submit').click();
+              return win.fixtureSelectChanges===1 && win.fixtureRadioClicks===1 && win.fixtureSearchSubmissions===1 && radio.checked;
+            })()
+            """) as? Bool
+        XCTAssertEqual(activated, true, "Original select, radio and submit handlers must run")
         try await eventually(session.view, """
             frames[1]?.fixtureRequestMethod==='POST' && window.__y3ClientNavigation?.submissionRevision===1 &&
             window.__y3ClientNavigation?.resultSubmissionRevision===1
@@ -564,6 +590,21 @@ final class WebKitRuntimeTests: XCTestCase {
             let preserved = try await session.view.evaluateJavaScript("""
                 (()=>{
                   const original=window.fixtureCompound, current=Array.from(original.form.elements);
+                  const rect=node=>{const box=node.getBoundingClientRect(),style=getComputedStyle(node);return{
+                    id:node.id,name:node.name,type:node.type,left:box.left,right:box.right,top:box.top,
+                    width:box.width,height:box.height,minHeight:style.minHeight,display:style.display,
+                    label:node.getAttribute('aria-label'),labelledBy:node.getAttribute('aria-labelledby')};};
+                  window.fixtureCompoundDiagnostics=JSON.stringify({viewport:innerWidth,documentWidth:document.documentElement.scrollWidth,
+                    nonAncestral:original.nonAncestral,currentCount:current.length,originalCount:original.controls.length,
+                    methodMatch:original.form.method===original.method,targetMatch:original.form.target===original.target,actionMatch:original.form.action===original.action,
+                    fields:current.map((control,index)=>{const field=original.fields[index];let parent=control.parentElement,ancestors=true;
+                      for(const ancestor of original.ancestors[index]||[]){if(parent!==ancestor)ancestors=false;parent=parent?.parentElement;}
+                      return{id:control.id,node:control===original.controls[index],owner:control.form===field?.form,
+                        name:control.name===field?.name,type:control.type===field?.type,value:control.value===field?.value,
+                        click:control.onclick===field?.onclick,change:control.onchange===field?.onchange,ancestors};}),
+                    labels:document.querySelectorAll('[data-y3client-compound-label]').length,
+                    controls:current.filter(control=>control.type!=='hidden').map(rect),
+                    calendarMatch:original.calendar===document.getElementById('ui-datepicker-div')&&original.calendar.outerHTML===original.calendarHTML});
                   if(!original.nonAncestral || current.length!==24 || current.length!==original.controls.length ||
                      original.form.method!==original.method || original.form.target!==original.target ||
                      original.form.action!==original.action)return false;
@@ -582,22 +623,30 @@ final class WebKitRuntimeTests: XCTestCase {
                   };
                   if(label('fixture-date-start')!=='架空期間 開始日' || label('fixture-date-end')!=='架空期間 終了日' ||
                      label('fixture-code-3')!=='架空分類 3' || document.querySelectorAll('[data-y3client-compound-label]').length!==6)return false;
-                  const box=node=>node.getBoundingClientRect();
-                  const dates=['fixture-date-start','fixture-date-end'].map(id=>box(document.getElementById(id)));
-                  if(Math.abs(dates[0].top-dates[1].top)>1 || dates[0].right>dates[1].left)return false;
-                  for(const name of ['fixtureSub','fixtureCode']){
-                    const boxes=Array.from(document.querySelectorAll('input[name="'+name+'"]').values()).map(box);
-                    if(boxes.length!==5 || boxes.some(rect=>Math.abs(rect.top-boxes[0].top)>1))return false;
-                  }
-                  const controls=Array.from(document.querySelectorAll('#fixture-compound-table input:not([type="hidden"]),#fixture-compound-table select'));
-                  if(!controls.every(control=>{const rect=box(control);return rect.left>=0 && rect.right<=innerWidth+1 && rect.height>=44;}) ||
-                     document.documentElement.scrollWidth>innerWidth+1)return false;
                   return original.calendar===document.getElementById('ui-datepicker-div') &&
                     original.calendar.outerHTML===original.calendarHTML &&
                     !original.calendar.querySelector('[data-y3client-result-list],[data-y3client-result-tools],[data-y3client-table-scroll]');
                 })()
                 """) as? Bool
-            XCTAssertEqual(preserved, true, "Malformed FORM ownership, individual slots and phone layout must survive at \(width)px")
+            let compoundDiagnostics = (try await session.view.evaluateJavaScript("window.fixtureCompoundDiagnostics || 'diagnostics unavailable'")) as? String ?? "diagnostics unavailable"
+            XCTAssertEqual(preserved, true, "Malformed FORM ownership, names, values and calendar must survive at \(width)px: \(compoundDiagnostics)")
+            do {
+                try await eventually(session.view, """
+                    (()=>{
+                      const box=node=>node.getBoundingClientRect();
+                      const controls=Array.from(document.querySelectorAll('#fixture-compound-table input:not([type="hidden"]),#fixture-compound-table select'));
+                      const bounds=controls.map(node=>{const rect=box(node);return{id:node.id,name:node.name,left:rect.left,right:rect.right,top:rect.top,height:rect.height};});
+                      window.fixtureCompoundLastGeometry=JSON.stringify({viewport:innerWidth,documentWidth:document.documentElement.scrollWidth,bounds});
+                      const dates=['fixture-date-start','fixture-date-end'].map(id=>box(document.getElementById(id)));
+                      if(Math.abs(dates[0].top-dates[1].top)>1 || dates[0].right>dates[1].left)return false;
+                      for(const name of ['fixtureSub','fixtureCode']){
+                        const boxes=Array.from(document.querySelectorAll('input[name="'+name+'"]')).map(box);
+                        if(boxes.length!==5 || boxes.some(rect=>Math.abs(rect.top-boxes[0].top)>1))return false;
+                      }
+                      return bounds.every(rect=>rect.left>=0 && rect.right<=innerWidth+1 && rect.height>=44) && document.documentElement.scrollWidth<=innerWidth+1;
+                    })()
+                    """, diagnostics: "JSON.stringify({first:window.fixtureCompoundDiagnostics,last:window.fixtureCompoundLastGeometry})")
+            } catch { /* The recorded geometry failure must not prevent the independent original POST check. */ }
             let submitted = try await session.view.evaluateJavaScript("""
                 (()=>{
                   for(const id of ['fixture-brand-help','fixture-sub-help','fixture-code-help'])document.getElementById(id).click();
@@ -674,6 +723,54 @@ final class WebKitRuntimeTests: XCTestCase {
             XCTAssertEqual(session.observer.failures, [])
             XCTAssertEqual(session.observer.scriptErrors, [])
         }
+        let picker = FixtureSession(path: "/scripts/verona/print/prtz098_7.asp?scenario=checkbox-picker", width: 320)
+        defer { picker.close() }
+        try await picker.waitForLoad()
+        try await eventually(picker.view, "!!frames[0]?.document.querySelector('table[data-y3client-selection-table][data-y3client-action-table]')")
+        let pickerPanes = try await panes(picker.view)
+        XCTAssertEqual(pickerPanes.first { ($0["path"] as? [Int]) == [0] }?["kind"] as? String, "result")
+        let selected = try await picker.view.evaluateJavaScript("""
+            (()=>{
+              const win=frames[0], doc=win.document, original=win.fixtureAction;
+              const table=doc.getElementById('fixture-selection-table'), form=doc.getElementById('fixture-selection-form');
+              const controls=Array.from(doc.querySelectorAll('input,select,textarea,button'));
+              if(controls.length!==original.controls.length || !controls.every((control,index)=>{
+                const field=original.fields[index];
+                if(control!==original.controls[index] || control.form!==field.form || control.name!==field.name ||
+                   control.value!==field.value || control.onclick!==field.onclick || control.onchange!==field.onchange)return false;
+                let parent=control.parentElement;
+                for(const ancestor of original.ancestors[index]){if(parent!==ancestor)return false;parent=parent.parentElement;}
+                return true;
+              }))return false;
+              const rect=table.getBoundingClientRect(), style=win.getComputedStyle(table);
+              if(!['auto','scroll'].includes(style.overflowX) || table.scrollWidth<=table.clientWidth ||
+                 rect.left<0 || rect.right>win.innerWidth+1 || doc.documentElement.scrollWidth>win.innerWidth+1 ||
+                 win.getComputedStyle(doc.getElementById('elements-limit')).position!=='static')return false;
+              const choices=Array.from(doc.querySelectorAll('input[name="fixture_codes"]'));
+              if(choices.length!==24 || choices.some(control=>{
+                const label=control.getAttribute('aria-label') || Array.from(control.labels||[]).map(node=>node.textContent.trim()).join(' ');
+                return control.form!==form || !label.includes(control.value) || control.getBoundingClientRect().height<44;
+              }))return false;
+              for(const choice of choices.slice(0,6))choice.click();
+              doc.getElementById('fixture-picker-register').click();
+              if(win.fixtureSelectionChanges!==6 || win.fixtureSubmitAttempts!==1 || win.fixtureLimitRejections!==1 ||
+                 (win.fixtureAcceptedSubmissions||0)!==0 || !doc.getElementById('fixture-selection-status').textContent.includes('5件まで'))return false;
+              choices[5].click();doc.getElementById('fixture-picker-back').click();
+              if(win.fixtureBackCalls!==1 || doc.getElementById('fixture-remaining').textContent!=='0')return false;
+              doc.getElementById('fixture-picker-register').click();
+              return win.fixtureAcceptedSubmissions===1 && win.fixtureSubmitAttempts===2 &&
+                form.target==='fixtureSelectionResult';
+            })()
+            """) as? Bool
+        XCTAssertEqual(selected, true, "The _8 checkbox picker must retain row labels, bounded layout and its original five-item limit")
+        try await eventually(picker.view, "frames[0]?.frames[0]?.fixtureRequestMethod==='POST'")
+        let pickerPosted = try await picker.view.evaluateJavaScript("""
+            JSON.stringify(frames[0].frames[0].fixtureSubmittedArrays.fixture_codes)===JSON.stringify(['FX01','FX02','FX03','FX04','FX05']) &&
+            JSON.stringify(frames[0].frames[0].fixtureSubmittedArrays.fixture_token)===JSON.stringify(['fictional-picker-token-a','fictional-picker-token-b'])
+            """) as? Bool
+        XCTAssertEqual(pickerPosted, true, "The original picker target must receive all five selections and both hidden tokens")
+        XCTAssertEqual(picker.observer.failures, [])
+        XCTAssertEqual(picker.observer.scriptErrors, [])
     }
 
     @MainActor

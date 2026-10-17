@@ -165,6 +165,7 @@ def maintenance_action_report(scenario=""):
         "nested": "maintenance-nested-action-report.html",
         "frozen-clone": "maintenance-frozen-action-clone.html",
         "frozen-header": "maintenance-frozen-action-header.html",
+        "checkbox-picker": "maintenance-selection-picker.html",
     }
     filename = filenames.get(scenario, "maintenance-action-report.html")
     source = (Path(__file__).resolve().parent.parent / "fixtures" / filename).read_text(encoding="utf-8")
@@ -197,7 +198,12 @@ class Handler(BaseHTTPRequestHandler):
             body = compound_result(self.command, getattr(self, "fixture_post_values", None))
         elif parsed.path == BASE + "prtz098_4.asp":
             body = maintenance_action_report(scenario)
-        elif parsed.path == "/fixture/post":
+        elif parsed.path == BASE + "prtz098_7.asp" and scenario == "checkbox-picker":
+            body = '''<!doctype html><html><head><title>架空分類選択フレーム</title></head>
+            <frameset rows="*"><frame name="prtz098_8" src="/scripts/verona/print/prtz098_8.asp"></frameset></html>'''
+        elif parsed.path == BASE + "prtz098_8.asp":
+            body = maintenance_action_report("checkbox-picker")
+        elif parsed.path in ["/fixture/post", "/fixture/selection-post"]:
             body = compound_result(self.command, getattr(self, "fixture_post_values", None))
         elif parsed.path == BASE + "prtz030_1.asp":
             query = "?scenario=result-pager" if scenario == "result-pager" else ""

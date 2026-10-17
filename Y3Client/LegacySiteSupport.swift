@@ -608,6 +608,9 @@ enum LegacySiteSupport {
           [data-y3client-table-scroll] > table:not([data-y3client-result-list='cards']) th { padding:10px 12px; border:1px solid #e3e5e8; }
           [data-y3client-table-scroll] > table:not([data-y3client-result-list='cards']) th { background:#f0f1f3; font-weight:600; }
           table[data-y3client-action-table] { display:block!important; width:100%!important; max-width:100%!important; box-sizing:border-box; overflow-x:auto!important; -webkit-overflow-scrolling:touch; }
+          table[data-y3client-selection-table] input[type='checkbox' i], table[data-y3client-selection-table] input[type='radio' i] { min-width:44px; min-height:44px; accent-color:#111; }
+          table[data-y3client-selection-table] label { display:inline-flex; align-items:center; min-width:44px; min-height:44px; box-sizing:border-box; }
+          html[data-y3client-selection-page] #elements-limit { position:static!important; display:block!important; max-width:100%; margin:4px 0; white-space:normal!important; }
           [data-y3client-action-container] { position:relative!important; left:0!important; top:0!important; width:100%!important; max-width:100%!important; height:auto!important; max-height:none!important; box-sizing:border-box; }
           [data-y3client-action-container][data-y3client-action-header] { height:var(--y3client-action-header-height)!important; overflow-y:hidden!important; }
           [data-y3client-action-redundant-header] { display:none!important; }
@@ -631,13 +634,19 @@ enum LegacySiteSupport {
         `;
         document.head.appendChild(style);
       }
-      // Report drill-down buttons use parser-owned legacy forms. Bound the existing
+      // Report actions and selection grids use parser-owned legacy forms. Bound the existing
       // TABLE itself rather than moving it into a wrapper and losing those associations.
       for(const table of Array.from(document.querySelectorAll('table'))){
         if(table.rows.length<2||table.querySelector('table')||table.closest('[data-y3client-form-table],[data-y3client-search-table],#ui-datepicker-div,.ui-datepicker,[role="dialog"],[role="grid"],[data-y3client-table-scroll]'))continue;
         const controls=Array.from(table.querySelectorAll('input,select,textarea,button')).filter(control=>control.type!=='hidden');
-        if(!controls.length||!controls.every(control=>control.tagName==='BUTTON'||(control.tagName==='INPUT'&&/^(button|submit|reset)$/.test(control.type))))continue;
+        if(!controls.length||!controls.every(control=>control.tagName==='BUTTON'||(control.tagName==='INPUT'&&/^(button|submit|reset|checkbox|radio)$/.test(control.type))))continue;
         table.setAttribute('data-y3client-action-table','');table.setAttribute('data-y3client-table-scroll','');table.tabIndex=0;if(!table.hasAttribute('aria-label'))table.setAttribute('aria-label','操作付き検索結果の表');
+        for(const control of controls.filter(control=>/^(checkbox|radio)$/.test(control.type))){
+          table.setAttribute('data-y3client-selection-table','');root.setAttribute('data-y3client-selection-page','');
+          if(control.hasAttribute('aria-label')||control.hasAttribute('aria-labelledby')||control.labels?.length)continue;
+          const row=control.closest('tr'),description=row&&Array.from(row.cells).filter(cell=>!cell.querySelector('input,select,textarea,button')).slice(0,2).map(cell=>(cell.textContent||'').replace(/\s+/g,' ').trim()).filter(Boolean).join(' ');
+          if(description)control.setAttribute('aria-label',description.slice(0,120)+' を選択');
+        }
         const parent=table.parentElement;
         if(parent&&/^D_.*_[HB]$/i.test(parent.id)){
           if(/_H$/i.test(parent.id)){parent.style.setProperty('--y3client-action-header-height',Math.max(1,parent.getBoundingClientRect().height)+'px');parent.setAttribute('data-y3client-action-header','');}
