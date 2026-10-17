@@ -20,9 +20,9 @@ App Store向けIPAは、ファイルをiPhoneへ渡すだけではインスト�
 
 ## 現在の実行結果
 
-2026年10月17日の[署名ビルド](https://github.com/444yttt/Y3POSClient/actions/runs/39027401979)で、利用者の店舗サイズガイドを反映した版のSimulatorビルド、実機向けRelease archive、App Store配布用IPAの書き出しと署名検証が成功しました。ビルドしたcommitは`5eda20fd031610dc3307c9b0d4121864a6e4a846`、バージョンは`1.3.0`、ビルド番号は`5`です。既存の専用ProfileとP12を使用し、署名Secrets・配布方式は変更していません。
+2026年10月17日の[署名ビルド](https://github.com/444yttt/Y3POSClient/actions/runs/39031655974)で、全メニューの表示・操作を保守した版のSimulatorビルド、実機向けRelease archive、App Store配布用IPAの書き出しと署名検証が成功しました。ビルドしたcommitは`08453623e31eecc0a693ff80f3d152033455440c`、バージョンは`1.4.0`、ビルド番号は`6`です。既存の専用ProfileとP12を使用し、署名Secrets・配布方式は変更していません。
 
-同じ実行でiOS 18.5 Simulatorの実際のWKWebViewを使い、文書読み込み前に本体と同じスクリプトを登録したテスト6件が成功しました。サイズガイドの対応値・カテゴリ境界・USウィメンズの空欄・ソックスとワンサイズの608区別、UK／USウィメンズ切替時の全在庫値の維持、在庫結果の統合、遅延生成、原表の操作、自動入力を架空データで確認しています。[テスト構成と範囲](../Tests/WebKitHarness/README.md)を参照してください。実サイトでの検索・在庫照合は前回までにChromiumで確認した範囲です。
+同じ実行でiOS 18.5 Simulatorの実際のWKWebViewを使い、文書読み込み前に本体と同じスクリプトを登録したテスト13件が成功しました。同じ品番の更新順、通常・動的な選択欄の高さ、元のPOSTとページ送り、候補の選択上限、固定見出し、フォーカス、サイズガイドと在庫値、自動入力を架空データで確認しています。[テスト構成と範囲](../Tests/WebKitHarness/README.md)を参照してください。実サイトの46メニューの検索・抽出表示はChromiumで別に確認し、[点検範囲と制限](MAINTENANCE.md)を記録しています。
 
 Profileの有効期限は`2027-09-28T14:59:37Z`です。arm64の署名、Bundle ID、証明書、Entitlements、Profileの一致と期限など15項目の検証が通り、受け取り後もIPAのSHA256と埋め込みProfileを照合しました。Extensionはありません。iPhone実機での動作、AirPrint、共有画面は未確認です。
 
