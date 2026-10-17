@@ -164,7 +164,13 @@ final class WebKitRuntimeTests: XCTestCase {
         XCTAssertTrue(session.observer.finished)
         XCTAssertEqual(session.observer.failures, [])
         XCTAssertEqual(session.observer.scriptErrors, [])
-        let image = try await session.view.takeSnapshot(with: nil)
+        let image: UIImage = try await withCheckedThrowingContinuation { continuation in
+            session.view.takeSnapshot(with: nil) { image, error in
+                if let error { continuation.resume(throwing: error) }
+                else if let image { continuation.resume(returning: image) }
+                else { continuation.resume(throwing: NSError(domain: "WKFixtureSnapshot", code: 1)) }
+            }
+        }
         let attachment = XCTAttachment(image: image)
         attachment.name = "Real WKWebView synthetic inventory"
         attachment.lifetime = .keepAlways
