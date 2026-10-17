@@ -152,7 +152,8 @@ final class WebKitRuntimeTests: XCTestCase {
                 builtAtLoad:!!frames[1].fixtureGridBuilt,
                 lateGrid:!!matrix.querySelector('#T01_H a'),
                 width:doc.documentElement.scrollWidth,
-                viewport:win.innerWidth
+                viewport:win.innerWidth,
+                pagerHeight:doc.querySelector('[data-y3client-inventory-pages] select')?.getBoundingClientRect().height ?? 0
               };
             })()
             """) as? [String: Any] ?? [:]
@@ -164,6 +165,7 @@ final class WebKitRuntimeTests: XCTestCase {
         XCTAssertEqual(diagnostics["builtAtLoad"] as? Bool, true)
         XCTAssertEqual(diagnostics["originalMatrix"] as? Bool, true)
         XCTAssertEqual(diagnostics["lateGrid"] as? Bool, true)
+        XCTAssertGreaterThanOrEqual(diagnostics["pagerHeight"] as? Double ?? 0, 44, "The generated inventory dropdown must retain a 44px touch target")
         XCTAssertLessThanOrEqual(diagnostics["width"] as? Int ?? Int.max,
                                  (diagnostics["viewport"] as? Int ?? 0) + 1)
         XCTAssertTrue(session.observer.finished)
@@ -547,6 +549,8 @@ final class WebKitRuntimeTests: XCTestCase {
             window.__y3ClientNavigation?.submissionRevision===1 &&
             window.__y3ClientNavigation?.resultSubmissionRevision===1
             """)
+        let pagerHeight = try await session.view.evaluateJavaScript("frames[1].document.getElementById('result-page').getBoundingClientRect().height") as? Double
+        XCTAssertGreaterThanOrEqual(pagerHeight ?? 0, 44, "The original PgSelect dropdown must retain a 44px touch target after the real frame POST")
         let firstPanes = try await panes(session.view)
         XCTAssertEqual(firstPanes.first { ($0["path"] as? [Int]) == [1] }?["kind"] as? String, "result")
         // Treat the second action as a distinct user action outside the submission debounce window.

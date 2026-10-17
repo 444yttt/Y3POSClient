@@ -104,6 +104,16 @@ enum LegacySiteSupport {
           html[data-y3client-phone] button {
             min-width: 44px; padding: 8px 12px;
           }
+          html[data-y3client-phone] select:not([multiple]):not([size]),
+          html[data-y3client-phone] select:not([multiple])[size='0'],
+          html[data-y3client-phone] select:not([multiple])[size='1'],
+          html[data-y3client-phone] select:not([multiple])[size=''] {
+            height:48px!important; min-height:48px!important; padding-right:40px!important;
+            -webkit-appearance:none!important; appearance:none!important; background-color:#fff!important;
+            background-image:linear-gradient(45deg,transparent 50%,#65707a 50%),linear-gradient(135deg,#65707a 50%,transparent 50%)!important;
+            background-position:calc(100% - 20px) 50%,calc(100% - 15px) 50%!important;
+            background-size:5px 5px!important; background-repeat:no-repeat!important;
+          }
           html[data-y3client-phone] input[name*="YYYYMMDD" i] {
             width: 9ch !important; min-width: 9ch; padding-inline: 3px;
           }
