@@ -20,7 +20,9 @@ App Store向けIPAは、ファイルをiPhoneへ渡すだけではインスト�
 
 ## 現在の実行結果
 
-2026年10月17日の[署名ビルド](https://github.com/444yttt/Y3POSClient/actions/runs/39022303775)で、サイズ別在庫・結果統合・ログイン自動入力を追加した版のSimulatorビルド、実機向けRelease archive、App Store配布用IPAの書き出しと署名検証が成功しました。ビルドしたcommitは`3e205067c74083ee757a19a9e012113f3cbda16f`、バージョンは`1.2.0`、ビルド番号は`3`です。Apple Developerで作成した専用Profileを`BUILD_PROVISION_PROFILE_BASE64`へ登録し、既存P12の署名証明書を使用しています。
+2026年10月17日の[署名ビルド](https://github.com/444yttt/Y3POSClient/actions/runs/39024437370)で、在庫詳細照会に「結果1／結果2」が残る問題を修正した版のSimulatorビルド、実機向けRelease archive、App Store配布用IPAの書き出しと署名検証が成功しました。ビルドしたcommitは`f60243243b14d00d6b62def7eca89207c1eba55c`、バージョンは`1.2.1`、ビルド番号は`4`です。Apple Developerで作成した専用Profileを`BUILD_PROVISION_PROFILE_BASE64`へ登録し、既存P12の署名証明書を使用しています。
+
+同じ実行でiOS 18.5 Simulatorの実際のWKWebViewを使い、文書読み込み前に本体と同じスクリプトを登録したテスト5件が成功しました。在庫照会011と在庫詳細照会010・015、フレーム順序と末尾番号が異なる画面、遅延生成、統合できない場合の表示、原表のハンドラー維持、自動入力を架空データで確認しています。[テスト構成と範囲](../Tests/WebKitHarness/README.md)を参照してください。実サイトの別経路でも、Chromiumで靴・Tシャツの結果統合を確認しました。
 
 Profileの有効期限は`2027-09-28T14:59:37Z`です。arm64の署名、Bundle ID、証明書、Entitlements、Profileの一致と期限など15項目の検証が通り、受け取り後もIPAのSHA256と埋め込みProfileを照合しました。Extensionはありません。iPhone実機での動作、AirPrint、共有画面は未確認です。
 
@@ -64,7 +66,7 @@ Profileが未設定の場合は、登録されたASCキーを使い、既存.p12
 
 Secretsを用意する前でも、Actionsの `Check Y3 POS Client iOS Build` でApple SDKによる無署名Simulatorビルドを確認できます。このworkflowはSecretsの参照や署名資産の復元を行いません。
 
-Secretsの登録後、Actionsから `Build Y3 POS Client IPA` を手動実行します。`source_ref`は`main`だけを受け付けます。専用リポジトリの`main`から手動実行した場合にだけ動作し、実行開始時のcommitをビルドします。Xcode 16.4を確認し、無署名Simulatorビルドの後、実機Releaseのarchive・manual export・署名検証を行います。
+Secretsの登録後、Actionsから `Build Y3 POS Client IPA` を手動実行します。`source_ref`は`main`だけを受け付けます。専用リポジトリの`main`から手動実行した場合にだけ動作し、実行開始時のcommitをビルドします。Xcode 16.4を確認し、署名Secretsを渡さない工程でiOS Simulator上のWKWebViewテストを実行します。その成功後に本体の無署名Simulatorビルド、実機Releaseのarchive・manual export・署名検証を行います。架空データのWebKitテスト結果は別Artifactに7日間保存します。
 
 出力IPAの全architectureについて、コード署名、Bundle、実署名証明書、Entitlements、埋め込みProfile、期限、選択したProfileとの一致を検証します。成功した場合だけIPAと検証JSONをまとめ、受取人のage公開鍵で暗号化した`.age`ファイルだけをArtifactとして7日間保存します。平文のIPA、検証JSON、生のProfile、証明書ファイル、.p12、API秘密鍵、一時Keychain、archiveはアップロードしません。
 
