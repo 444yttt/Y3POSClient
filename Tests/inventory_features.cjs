@@ -454,9 +454,13 @@ async function checkSizeGuide(browser) {
       capOneSize: api.resolveCategory({ categoryCode: '3ACC' }, model('架空のCAP ONE SIZE', ['608'])),
       socksOneSize: api.resolveCategory({ categoryCode: '3ACC' }, model('架空のSOCKS ONE SIZE', ['608'])),
       accessoryNS: api.resolveCategory({ categoryCode: '3ACC' }, model('架空のバッグ', ['601'])),
+      labeledSocks: api.resolveCategory({ categoryLabel: 'ACC ソックス' }, model('架空の商品', ['608'])),
+      labeledHeadwear: api.resolveCategory({ categoryLabel: 'ACC キャップ' }, model('架空の商品', ['102'])),
+      labeledCapOneSize: api.resolveCategory({ categoryLabel: 'ACC CAP ONE SIZE' }, model('架空の商品', ['608'])),
+      labeledSocksOneSize: api.resolveCategory({ categoryLabel: 'ACC SOCKS ONE SIZE' }, model('架空の商品', ['608'])),
     };
   });
-  assert.deepEqual(resolved, { women: 'apparelWomen', men: 'apparelMen', footwear: 'footwear', unisex: 'apparelUnisex', socks: 'socks', headwear: 'headwear', oneSize: 'oneSize', unknown608: '', genericACC: '', conflict: '', explicitOverName: 'apparelWomen', capOneSize: 'oneSize', socksOneSize: 'socks', accessoryNS: 'oneSize' });
+  assert.deepEqual(resolved, { women: 'apparelWomen', men: 'apparelMen', footwear: 'footwear', unisex: 'apparelUnisex', socks: 'socks', headwear: 'headwear', oneSize: 'oneSize', unknown608: '', genericACC: '', conflict: '', explicitOverName: 'apparelWomen', capOneSize: 'oneSize', socksOneSize: 'socks', accessoryNS: 'oneSize', labeledSocks: 'socks', labeledHeadwear: 'headwear', labeledCapOneSize: 'oneSize', labeledSocksOneSize: 'socks' });
   const aliases = ['カテゴリNo', 'カテゴリーNo', 'カテゴリ番号', 'カテゴリー番号', 'カテゴリーＮＯ'];
   const summaries = await page.evaluate(aliases => {
     const api = window.__y3InventoryPresentation;

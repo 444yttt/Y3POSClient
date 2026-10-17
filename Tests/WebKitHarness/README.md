@@ -20,6 +20,7 @@ The matrix is constructed by the fixture's own `window.load` listener. The produ
 - Inventory families 010/015 under print/display, including reversed metadata/matrix frames with arbitrary suffixes, a separate navigation frame, and a delayed page-owned grid constructor.
 - Raw fallback styles, source-handler proxying after an identical same-document table replacement, and preservation of the selected table mode.
 - Isolated staff arguments filling only the matching main document and never submitting.
+- Store-guide mappings for footwear, category-specific apparel, socks and one-size codes; blank US women cells remain unknown. Six footwear unit choices and UK/US women switching preserve every size row and primary/detail stock value.
 
 These tests must pass under `xcodebuild test` on an actual iOS Simulator. Linux grammar/project checks or a Chromium run do not count as their execution result. The selected runtime is recorded in `devices.json`; Xcode 16.4 normally runs the iOS 18.5 simulator. Testing an iOS 17 runtime requires installing/selecting that runtime separately.
 

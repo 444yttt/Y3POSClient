@@ -20,9 +20,9 @@ App Store向けIPAは、ファイルをiPhoneへ渡すだけではインスト�
 
 ## 現在の実行結果
 
-2026年10月17日の[署名ビルド](https://github.com/444yttt/Y3POSClient/actions/runs/39024437370)で、在庫詳細照会に「結果1／結果2」が残る問題を修正した版のSimulatorビルド、実機向けRelease archive、App Store配布用IPAの書き出しと署名検証が成功しました。ビルドしたcommitは`f60243243b14d00d6b62def7eca89207c1eba55c`、バージョンは`1.2.1`、ビルド番号は`4`です。Apple Developerで作成した専用Profileを`BUILD_PROVISION_PROFILE_BASE64`へ登録し、既存P12の署名証明書を使用しています。
+2026年10月17日の[署名ビルド](https://github.com/444yttt/Y3POSClient/actions/runs/39027401979)で、利用者の店舗サイズガイドを反映した版のSimulatorビルド、実機向けRelease archive、App Store配布用IPAの書き出しと署名検証が成功しました。ビルドしたcommitは`5eda20fd031610dc3307c9b0d4121864a6e4a846`、バージョンは`1.3.0`、ビルド番号は`5`です。既存の専用ProfileとP12を使用し、署名Secrets・配布方式は変更していません。
 
-同じ実行でiOS 18.5 Simulatorの実際のWKWebViewを使い、文書読み込み前に本体と同じスクリプトを登録したテスト5件が成功しました。在庫照会011と在庫詳細照会010・015、フレーム順序と末尾番号が異なる画面、遅延生成、統合できない場合の表示、原表のハンドラー維持、自動入力を架空データで確認しています。[テスト構成と範囲](../Tests/WebKitHarness/README.md)を参照してください。実サイトの別経路でも、Chromiumで靴・Tシャツの結果統合を確認しました。
+同じ実行でiOS 18.5 Simulatorの実際のWKWebViewを使い、文書読み込み前に本体と同じスクリプトを登録したテスト6件が成功しました。サイズガイドの対応値・カテゴリ境界・USウィメンズの空欄・ソックスとワンサイズの608区別、UK／USウィメンズ切替時の全在庫値の維持、在庫結果の統合、遅延生成、原表の操作、自動入力を架空データで確認しています。[テスト構成と範囲](../Tests/WebKitHarness/README.md)を参照してください。実サイトでの検索・在庫照合は前回までにChromiumで確認した範囲です。
 
 Profileの有効期限は`2027-09-28T14:59:37Z`です。arm64の署名、Bundle ID、証明書、Entitlements、Profileの一致と期限など15項目の検証が通り、受け取り後もIPAのSHA256と埋め込みProfileを照合しました。Extensionはありません。iPhone実機での動作、AirPrint、共有画面は未確認です。
 
