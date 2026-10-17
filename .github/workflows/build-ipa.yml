@@ -47,6 +47,18 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      - name: Verify inventory integration in iOS WebKit before signing
+        run: bash Tests/WebKitHarness/run-macos.sh "$GITHUB_WORKSPACE" "$RUNNER_TEMP/y3-webkit-runtime"
+
+      - name: Save synthetic iOS WebKit test evidence
+        if: ${{ always() && hashFiles('Tests/WebKitHarness/run-macos.sh') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Y3POSClient-WebKitTests-${{ github.run_number }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: ${{ runner.temp }}/y3-webkit-runtime/Runtime.xcresult
+
       - name: Compile, restore existing signing assets, and export locally
         id: signing
         env:

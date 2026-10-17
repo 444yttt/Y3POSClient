@@ -54,6 +54,30 @@ enum LegacySiteSupport {
       const exportDocument = location.origin === 'https://adidas-y3.poscmcloud.jp:7705' &&
         location.pathname === '/dataspider/trigger/hanbai.asp';
       if ((location.origin !== origin && !exportDocument) || !document.documentElement) return;
+      // Metadata and inventory roles are structural: the site has multiple report URL families.
+      const reportTables = doc => Array.from(doc.querySelectorAll('table')).filter(table =>
+        !table.closest('[data-y3client-inventory-view]') && !table.querySelector('table')).slice(0, 64);
+      window.__y3ClientHasInventoryMetrics = (doc = document) => {
+        try {
+          if (doc.defaultView.location.origin !== origin) return false;
+          return reportTables(doc).some(table => ['有効在庫','積送在庫','取置在庫','販売実績'].every(label => table.textContent.includes(label)));
+        } catch (_) { return false; }
+      };
+      window.__y3ClientIsInventoryMetadata = (doc = document) => {
+        try {
+          if (doc.defaultView.location.origin !== origin || window.__y3ClientHasInventoryMetrics(doc) ||
+              doc.querySelector('input[type="password" i],input[type="text" i],input[type="date" i],textarea')) return false;
+          const tables = reportTables(doc);
+          const label = cell => cell.textContent.normalize('NFKC').replace(/[\s:：]/g, '');
+          const metadata = tables.filter(table => {
+            if (table.rows.length < 2 || table.rows.length > 6) return false;
+            const labels = Array.from(table.rows).flatMap(row => Array.from(row.cells).map(label));
+            return labels.includes('品番') && labels.some(value => /^(作成日付|作成日時|更新日時|更新日付|更新日)$/.test(value));
+          });
+          return metadata.length > 0 && !tables.some(table => !metadata.includes(table) && table.rows.length > 3 &&
+            !table.querySelector('input,select,button,textarea'));
+        } catch (_) { return false; }
+      };
       const root = document.documentElement;
       root.setAttribute('data-y3client-phone', '');
       const head = document.head;
@@ -449,7 +473,7 @@ enum LegacySiteSupport {
       const root = document.documentElement;
       const reportPage = /\/scripts\/verona\/(?:print|display|dwh)\/(?:prtz|dstz|help_)/i.test(location.pathname);
       if (!reportPage) return;
-      if (/\/prtz011_2_3\.asp$/i.test(location.pathname)) return;
+      if (window.__y3ClientIsInventoryMetadata?.()) return;
       // Legacy Tscroller builds the paired header/body tables in its load handler.
       if (document.readyState !== 'complete') { window.addEventListener('load', adaptResults, { once:true }); return; }
       root.setAttribute('data-y3client-redesign', '');
@@ -589,7 +613,7 @@ enum LegacySiteSupport {
         const original=HTMLFormElement.prototype.submit;
         HTMLFormElement.prototype.submit=function(...args){mark(this);return original.apply(this,args);};
       }
-      if(window!==host && readOnlyPage && !/\/prtz011_2_[123]\.asp$/i.test(path) && !searchForms.length && (document.querySelector('table') || /\/prtz\d+_(?:[2-9]|[2-9]_[2-9])\.asp$/i.test(path))) {
+      if(window!==host && readOnlyPage && !window.__y3ClientIsInventoryMetadata?.() && !window.__y3ClientHasInventoryMetrics?.() && !searchForms.length && (document.querySelector('table') || /\/prtz\d+_(?:[2-9]|[2-9]_[2-9])\.asp$/i.test(path))) {
         const ready=()=>{state.resultSubmissionRevision=state.submissionRevision || 0;};
         if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',ready,{once:true});else ready();
       }
@@ -601,7 +625,7 @@ enum LegacySiteSupport {
     (() => {
       'use strict';
       const ORIGIN = 'https://adidas-y3.poscmcloud.jp:15505';
-      if (location.origin !== ORIGIN || !/^\/scripts\/verona\/(?:display|dwh|print)\/prtz011(?:_\d+)*\.asp$/i.test(location.pathname)) return;
+      if (location.origin !== ORIGIN || !/^\/scripts\/verona\/(?:display|dwh|print)\/prtz\d+(?:_\d+)*\.asp$/i.test(location.pathname)) return;
       if (window.__y3InventoryPresentation?.version === 1) return;
       const MAX_ROWS = 512;
       const MAX_COLUMNS = 128;
@@ -1010,7 +1034,7 @@ enum LegacySiteSupport {
     })();
 
     (() => {
-      if(location.origin!=='https://adidas-y3.poscmcloud.jp:15505'||!/^\/scripts\/verona\/(?:print|dwh|display)\/prtz011(?:_\d+)*\.asp$/i.test(location.pathname))return;
+      if(location.origin!=='https://adidas-y3.poscmcloud.jp:15505'||!/^\/scripts\/verona\/(?:print|dwh|display)\/prtz\d+(?:_\d+)*\.asp$/i.test(location.pathname))return;
       // Internal codes confirmed by the user. US men's/EU: adidas manufacturer chart.
       // CH (CHN): reference conversions from published Y-3/adidas shoe labels.
       const catalog={
@@ -1112,25 +1136,36 @@ enum LegacySiteSupport {
     (() => {
       'use strict';
       const ORIGIN='https://adidas-y3.poscmcloud.jp:15505';
-      const rootPath=/^\/scripts\/verona\/(?:print|dwh)\/prtz011_2\.asp$/i;
+      const rootPath=/^\/scripts\/verona\/(?:print|dwh|display)\/(prtz\d+)(?:_\d+)*\.asp$/i;
       const trusted=win=>{try{return win.location.origin===ORIGIN;}catch(_){return false;}};
       let host;
-      try {host=window.top;if(!trusted(host)||!rootPath.test(host.location.pathname))return;}catch(_){return;}
+      try {host=window.top;if(!trusted(host)||!rootPath.test(host.location.pathname)||!host.document.querySelector('frameset'))return;}catch(_){return;}
       if(host.__y3ClientInventoryMerge){host.__y3ClientInventoryMerge.reconcile();return;}
-      const state={primary:null,secondary:null,view:null,mount:null,signature:'',mode:'cards',merged:false,raw:null,sourceTable:null};
+      const state={primary:null,secondary:null,view:null,mount:null,signature:'',mode:'cards',merged:false,raw:null,sourceTable:null,readySubmission:0};
       const listening=new WeakSet();
       const clean=value=>String(value??'').replace(/\s+/g,' ').trim();
+      const keyText=value=>clean(value).normalize('NFKC').replace(/[\s:：]/g,'');
+      const metricKeys=['available','inTransit','reserved','sales'];
+      const metricLabels=new Set(['有効在庫','積送在庫','取置在庫','販売実績']);
+      const generated='[data-y3client-inventory],[data-y3client-inventory-view]';
+      const currentDocument=frame=>{try{return trusted(frame.win)&&frame.win.document===frame.doc;}catch(_){return false;}};
       let running=false;
       const invalidate=()=>{
+        if(state.merged){
+          const navigation=host.__y3ClientNavigation;
+          if(navigation?.resultSubmissionRevision===state.readySubmission)navigation.resultSubmissionRevision=0;
+        }
         if(state.primary)state.primary.documentElement.removeAttribute('data-y3client-inventory-primary');
         if(state.secondary)state.secondary.documentElement.removeAttribute('data-y3client-inventory-secondary');
-        state.view?.remove();state.primary=null;state.secondary=null;state.view=null;state.mount=null;state.signature='';state.sourceTable=null;state.merged=false;
+        state.view?.remove();state.primary=null;state.secondary=null;state.view=null;state.mount=null;state.signature='';state.sourceTable=null;state.raw=null;state.merged=false;state.readySubmission=0;
       };
       const leafFrames=()=>{
         const result=[];
+        let visited=0;
         const walk=(win,depth)=>{
           if(depth>6||!trusted(win))return;
           for(const element of win.document.querySelectorAll('frame')){
+            if(++visited>128)return;
             const child=element.contentWindow;
             if(!child||!trusted(child))continue;
             if(!listening.has(element)){
@@ -1142,6 +1177,57 @@ enum LegacySiteSupport {
           }
         };
         walk(host,0);return result;
+      };
+      const originalTables=doc=>Array.from(doc.querySelectorAll('table')).filter(table=>!table.closest(generated)).slice(0,64);
+      const hasAllMetrics=matrix=>matrix&&Array.isArray(matrix.colors)&&matrix.colors.length>0&&
+        matrix.colors.every(color=>metricKeys.every(key=>Object.prototype.hasOwnProperty.call(color.metrics||{},key)));
+      const analyzeFrame=frame=>{
+        if(frame.doc.readyState!=='complete'||!currentDocument(frame))return null;
+        const api=frame.win.__y3InventoryPresentation;
+        if(!api?.parseInventoryTable||!api.parseInventorySummary)return null;
+        const tables=originalTables(frame.doc);
+        const sourceOrder=tables.slice().sort((a,b)=>(b.id.endsWith('_H')?1:0)-(a.id.endsWith('_H')?1:0));
+        const matrices=new Map();
+        let containsMetricCells=false;
+        for(const table of sourceOrder){
+          if(!containsMetricCells)containsMetricCells=Array.from(table.querySelectorAll('th,td')).some(cell=>
+            cell.closest('table')===table&&metricLabels.has(keyText(cell.textContent)));
+          const matrix=api.parseInventoryTable(table);
+          if(!hasAllMetrics(matrix)||!clean(matrix.product?.productCode))continue;
+          const signature=JSON.stringify(matrix);
+          if(!matrices.has(signature))matrices.set(signature,{frame,matrix,sourceTable:table});
+        }
+        // Paired frozen header/body copies represent one document, not two result candidates.
+        if(matrices.size===1)return {matrix:Array.from(matrices.values())[0],metadata:null};
+        if(matrices.size>1||containsMetricCells)return null;
+        const originalControls=Array.from(frame.doc.querySelectorAll('input,textarea')).filter(control=>!control.closest(generated));
+        if(originalControls.some(control=>control.tagName==='TEXTAREA'||['text','search','date','password'].includes(control.type)))return null;
+        const summary={productCode:'',productName:'',updatedAt:'',categoryLabel:''};
+        for(const table of tables){
+          const fields=api.parseInventorySummary(table);
+          for(const key of Object.keys(summary))if(!summary[key]&&fields[key])summary[key]=fields[key];
+        }
+        if(!clean(summary.productCode)||!clean(summary.updatedAt))return null;
+        const pager=Array.from(frame.doc.querySelectorAll('select[name="PgSelect"]')).find(control=>!control.closest(generated));
+        return {matrix:null,metadata:{frame,summary,hasPager:!!pager}};
+      };
+      const inventoryPair=frames=>{
+        const family=rootPath.exec(host.location.pathname)?.[1].toLowerCase();
+        const relevant=frames.filter(frame=>rootPath.exec(frame.path)?.[1].toLowerCase()===family);
+        // A loading counterpart cannot be replaced by an old already-complete result.
+        if(relevant.some(frame=>frame.doc.readyState!=='complete'))return null;
+        const analyses=relevant.map(analyzeFrame).filter(Boolean);
+        const matrices=analyses.map(record=>record.matrix).filter(Boolean);
+        const metadata=analyses.map(record=>record.metadata).filter(Boolean);
+        const pairs=[];
+        for(const secondary of matrices){
+          const matching=metadata.filter(primary=>primary.frame.doc!==secondary.frame.doc&&
+            clean(primary.summary.productCode)===clean(secondary.matrix.product.productCode));
+          const paged=matching.filter(primary=>primary.hasPager);
+          const preferred=paged.length?paged:matching;
+          for(const primary of preferred)pairs.push({primary:primary.frame,secondary:secondary.frame,summary:primary.summary,matrix:secondary.matrix,sourceTable:secondary.sourceTable});
+        }
+        return pairs.length===1?pairs[0]:null;
       };
       const installStyle=doc=>{
         if(doc.getElementById('y3client-inventory-merge-style'))return;
@@ -1204,35 +1290,37 @@ enum LegacySiteSupport {
           for(const [name,text] of [['hyouzi','表示'],['Front','前へ'],['Back','次へ']]){
             const control=doc.querySelector('input[name="'+name+'"]');if(!control)continue;
             const button=doc.createElement('button');button.type='button';button.textContent=text;button.disabled=control.disabled;button.setAttribute('aria-label','在庫結果 '+text);
-            button.addEventListener('click',()=>{if(!doc.documentElement.isConnected||control.disabled)return;original.value=select.value;control.click();});section.appendChild(button);
+            button.addEventListener('click',()=>{if(!currentDocument(primary)||!control.isConnected||control.disabled)return;original.value=select.value;control.click();});section.appendChild(button);
           }
           view.appendChild(section);
         }
-        const navigation=leafFrames().find(frame=>/\/prtz011_2_1\.asp$/i.test(frame.path));
-        const search=navigation&&Array.from(navigation.doc.querySelectorAll('a[href]')).find(anchor=>{try{return new URL(anchor.href,navigation.win.location.href).origin===ORIGIN&&/\/prtz011_1\.asp$/i.test(new URL(anchor.href,navigation.win.location.href).pathname);}catch(_){return false;}});
-        if(search){const button=doc.createElement('button');button.type='button';button.setAttribute('data-y3client-inventory-back','');button.textContent='検索条件を変更';button.addEventListener('click',()=>search.click());view.appendChild(button);}
+        const family=rootPath.exec(host.location.pathname)?.[1].toLowerCase();
+        let search=null,navigation=null;
+        for(const frame of leafFrames()){
+          if(!currentDocument(frame)||rootPath.exec(frame.path)?.[1].toLowerCase()!==family)continue;
+          const anchor=Array.from(frame.doc.querySelectorAll('a[href]')).find(anchor=>{
+            if(anchor.closest(generated)||!/検索指定|検索条件|検索/.test(clean(anchor.textContent)))return false;
+            try{const url=new URL(anchor.href,frame.win.location.href);const match=rootPath.exec(url.pathname);
+              return url.origin===ORIGIN&&!url.username&&!url.password&&match?.[1].toLowerCase()===family&&
+                new RegExp('/'+family+'_1\\.asp$','i').test(url.pathname);
+            }catch(_){return false;}
+          });
+          if(anchor){search=anchor;navigation=frame;break;}
+        }
+        if(search){const button=doc.createElement('button');button.type='button';button.setAttribute('data-y3client-inventory-back','');button.textContent='検索条件を変更';button.addEventListener('click',()=>{if(currentDocument(navigation)&&search.isConnected)search.click();});view.appendChild(button);}
       };
       function reconcile(){
         if(running)return state.merged;
-        if(!trusted(host)||!rootPath.test(host.location.pathname)){invalidate();return false;}
+        if(!trusted(host)||!rootPath.test(host.location.pathname)||!host.document.querySelector('frameset')){invalidate();return false;}
         running=true;
         try{
           const frames=leafFrames();
-          const primary=frames.find(frame=>/\/prtz011_2_3\.asp$/i.test(frame.path));
-          const secondary=frames.find(frame=>/\/prtz011_2_2\.asp$/i.test(frame.path));
-          if(!primary||!secondary||primary.doc.readyState!=='complete'||secondary.doc.readyState!=='complete'){invalidate();return false;}
+          const pair=inventoryPair(frames);
+          if(!pair){invalidate();return false;}
+          const {primary,secondary,matrix,sourceTable}=pair;
           const api=primary.win.__y3InventoryPresentation;
           if(!api){invalidate();return false;}
-          const summary={productCode:'',productName:'',updatedAt:'',categoryLabel:''};
-          for(const table of Array.from(primary.doc.querySelectorAll('table')).filter(table=>!table.closest('[data-y3client-inventory-view]')).slice(0,16)){
-            const fields=api.parseInventorySummary(table);
-            for(const key of Object.keys(summary))if(!summary[key]&&fields[key])summary[key]=fields[key];
-          }
-          const candidates=Array.from(secondary.doc.querySelectorAll('table')).filter(table=>!table.closest('[data-y3client-inventory]'));
-          candidates.sort((a,b)=>(b.id.endsWith('_H')?1:0)-(a.id.endsWith('_H')?1:0));
-          let matrix=null,sourceTable=null;
-          for(const table of candidates){matrix=api.parseInventoryTable(table);if(matrix){sourceTable=table;break;}}
-          if(!matrix||!summary.productCode||!matrix.product.productCode||clean(summary.productCode)!==clean(matrix.product.productCode)){invalidate();return false;}
+          const summary={...pair.summary};
           summary.categoryKey=categoryFor(matrix);
           const catalog=host.__y3InventorySizeCatalog;
           if(catalog)api.configureSizeMappings(catalog);
@@ -1253,6 +1341,7 @@ enum LegacySiteSupport {
           if(!state.view.__y3TableHandler){state.view.__y3TableHandler=true;state.view.addEventListener('y3client:inventory-show-table',showTable);}
           const navigation=host.__y3ClientNavigation||(host.__y3ClientNavigation={submissionRevision:0,resultSubmissionRevision:0});
           navigation.resultSubmissionRevision=navigation.submissionRevision||0;
+          state.readySubmission=navigation.resultSubmissionRevision;
           return true;
         }catch(_){invalidate();return false;}finally{running=false;}
       }
@@ -1304,7 +1393,7 @@ enum LegacySiteSupport {
           if (win.document.documentElement.hasAttribute('data-y3client-inventory-secondary')) {
             panes.push({path,kind:'controls',title:'元の在庫表'}); return;
           }
-          if (/\/prtz011_2_3\.asp$/i.test(win.location.pathname)) {
+          if (win.__y3ClientIsInventoryMetadata?.()) {
             panes.push({path,kind:'controls',title:'ページ操作'}); return;
           }
           const tableRows = body.querySelectorAll('table tr').length;

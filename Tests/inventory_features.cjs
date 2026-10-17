@@ -76,6 +76,51 @@ const fixtures = new Map([
   [fixturePaths.outside, shell(metadata() + matrix() + '<main id="combined-target"></main>')],
   [origin + '/fixture/page', shell('<p>架空ページ受信</p>')],
 ]);
+// Other inventory entry points use the same shape with different ASP families,
+// frame suffixes, frame ordering, and initialization timing.
+const inventoryFamilies = [
+  { key: 'print010', directory: 'print', family: '010', metadataSuffix: '3', matrixSuffix: '2', reverse: false },
+  { key: 'print015', directory: 'print', family: '015', metadataSuffix: '3', matrixSuffix: '2', reverse: true },
+  { key: 'display015', directory: 'display', family: '015', metadataSuffix: '3', matrixSuffix: '2', reverse: false, duplicateFullGrid: true },
+  { key: 'display015-structural', directory: 'display', family: '015', metadataSuffix: '5', matrixSuffix: '7', reverse: true, navigation: true, lateGrid: true },
+  { key: 'print010-mismatch', directory: 'print', family: '010', metadataSuffix: '3', matrixSuffix: '2', reverse: true, mismatched: true },
+];
+for (const item of inventoryFamilies) {
+  const base = `/scripts/verona/${item.directory}/prtz${item.family}`;
+  const query = `?fixture=${item.key}`;
+  item.root = base + '_2.asp' + query;
+  item.metadata = base + `_2_${item.metadataSuffix}.asp` + query;
+  item.matrix = base + `_2_${item.matrixSuffix}.asp` + query;
+  item.navigationPath = base + '_2_1.asp' + query;
+  const pair = [
+    `<frame name="inventory-metadata" src="${item.metadata}">`,
+    `<frame name="inventory-matrix" src="${item.matrix}">`,
+  ];
+  if (item.reverse) pair.reverse();
+  if (item.navigation) pair.unshift(`<frame name="inventory-navigation" src="${item.navigationPath}">`);
+  fixtures.set(origin + item.root, `<html><head><title>架空の在庫ファミリー確認</title></head><frameset rows="${item.navigation ? '60,110,*' : '110,*'}">${pair.join('')}</frameset></html>`);
+  fixtures.set(origin + item.metadata, shell(metadata('MOCK-F001')));
+  let grid = transposed();
+  if (item.duplicateFullGrid) {
+    const fullHeader = grid.match(/<table id="T01_H"[\s\S]*?<\/table>/)[0];
+    grid = grid.replace(/<table id="T01_B"[\s\S]*?<\/table>/, fullHeader.replace('id="T01_H"', 'id="T01_B"'));
+  }
+  if (item.mismatched) grid = grid.replaceAll('MOCK-F001', 'MOCK-OTHER001');
+  if (item.lateGrid) {
+    const payload = JSON.stringify(grid).replace(/</g, '\\u003c');
+    fixtures.set(origin + item.matrix, shell(`<div id="late-grid"></div><script>window.addEventListener('load',()=>setTimeout(()=>{document.getElementById('late-grid').innerHTML=${payload};window.fixtureLateInventoryReady=true},180),{once:true})</script>`));
+  } else fixtures.set(origin + item.matrix, shell(grid));
+  if (item.navigation) fixtures.set(origin + item.navigationPath, shell(`<a id="original-search" href="${base}_1.asp" onclick="window.fixtureSearchClicks=(window.fixtureSearchClicks||0)+1;return false">検索条件</a>`));
+}
+const dailyPaths = {
+  root: '/scripts/verona/print/prtz030_2.asp?fixture=noninventory',
+  summary: '/scripts/verona/print/prtz030_2_3.asp?fixture=noninventory',
+  matrix: '/scripts/verona/print/prtz030_2_2.asp?fixture=noninventory',
+};
+fixtures.set(origin + dailyPaths.root, `<html><head><title>架空の日別集計</title></head><frameset rows="110,*"><frame name="daily-summary" src="${dailyPaths.summary}"><frame name="daily-matrix" src="${dailyPaths.matrix}"></frameset></html>`);
+fixtures.set(origin + dailyPaths.summary, shell('<table id="daily-summary"><tr><th>日付</th><th>店舗</th><th>数量</th></tr><tr><td>2026/10/17</td><td>架空店舗</td><td>3</td></tr></table>'));
+fixtures.set(origin + dailyPaths.matrix, shell('<table id="daily-complex" width="1050"><tr><th rowspan="2">日付</th><th colspan="2">売上</th><th colspan="2">客数</th></tr><tr><th>数量</th><th>金額</th><th>組数</th><th>人数</th></tr><tr><td>2026/10/17</td><td>3</td><td>12,000</td><td>2</td><td>4</td></tr><tr><td>2026/10/18</td><td>5</td><td>20,000</td><td>3</td><td>6</td></tr></table>'));
+
 const assertFits = async (page, width) => {
   const boxes = await page.locator('[data-y3client-inventory]').evaluateAll(nodes => nodes.map(node => {
     const box = node.getBoundingClientRect();
@@ -172,7 +217,7 @@ async function checkCombinedInventory(context) {
   await metadataFrame.evaluate(() => { document.querySelector('#inventory-summary tr:last-child td').textContent = 'MOCK-NEXT001'; });
   await page.evaluate(() => window.__y3ClientInventoryMerge.reconcile());
   assert.equal(await metadataFrame.locator('[data-y3client-inventory]:visible').count(), 0, 'Mismatched old matrix must not appear under a new product header');
-  assert.equal(await page.evaluate(() => window.__y3ClientNavigation.resultSubmissionRevision), 3, 'An old matrix must not mark a new search as ready');
+  assert(await page.evaluate(() => window.__y3ClientNavigation.resultSubmissionRevision < window.__y3ClientNavigation.submissionRevision), 'An old matrix must not mark a new search as ready');
   // A complete late Tscroller replacement is picked up by a subsequent poll.
   await matrixFrame.evaluate(() => {
     const table = document.getElementById('T01_H');
@@ -201,6 +246,106 @@ async function checkCombinedInventory(context) {
   assert.equal(posted.get('unchanged'), 'synthetic-pager-token');
   assert.equal(posted.get('m01_hinban'), 'MOCK-F001', 'The original hidden query fields must not be recreated or modified');
   await page.close();
+}
+
+function withDocumentEndScripts(html) {
+  const injections = [script('viewportAndTouch'), script('mobileRedesign'), presentation];
+  assert(injections.every(Boolean));
+  assert(injections.every(content => !/<\/script/i.test(content)), 'Fixture script must not terminate its HTML script element');
+  const bodyDocument = /<\/body>/i.test(html);
+  const scripts = injections.map((content, index) => {
+    const run = `window.__fixtureInjections ||= []; window.__fixtureInjections.push(${index}); ${content}`;
+    // Chromium does not apply Playwright init scripts to legacy FRAME documents.
+    // Inline leaf scripts run at the end of the parsed DOM, before load. Frameset
+    // scripts wait for parsing so their FRAME nodes exist, like WK document-end.
+    return `<script>${bodyDocument ? run : `document.addEventListener('DOMContentLoaded',()=>{${run}},{once:true});`}</script>`;
+  }).join('\n');
+  return bodyDocument ? html.replace(/<\/body>/i, () => scripts + '</body>') : html.replace(/<\/head>/i, () => scripts + '</head>');
+}
+
+async function checkInventoryFamilies(browser) {
+  const reports = [];
+  for (const item of inventoryFamilies) {
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const unknown = [];
+    await context.route('**/*', async route => {
+      const body = fixtures.get(route.request().url());
+      if (body === undefined) { unknown.push(route.request().url()); await route.abort(); return; }
+      await route.fulfill({ contentType: 'text/html; charset=utf-8', body: withDocumentEndScripts(body) });
+    });
+    // No adaptation is run manually after load; fixtures inject at document end.
+    const page = await context.newPage();
+    await page.goto(origin + item.root);
+    const metadataFrame = page.frames().find(frame => frame.url() === origin + item.metadata);
+    const matrixFrame = page.frames().find(frame => frame.url() === origin + item.matrix);
+    assert(metadataFrame && matrixFrame, `${item.key}: both report documents must load`);
+    if (item.lateGrid) {
+      // A native discovery retry occurs after a late grid is generated.
+      await matrixFrame.waitForFunction(() => window.fixtureLateInventoryReady === true);
+    }
+    const discovery = script('discoverFrames');
+    assert(discovery);
+    let panes = await page.evaluate(discovery);
+    if (!item.mismatched) {
+      await metadataFrame.waitForSelector('[data-y3client-inventory]:visible', { timeout: 5000 }).catch(async error => {
+        const status = await page.evaluate(() => ({
+          coordinator: typeof window.__y3ClientInventoryMerge?.reconcile,
+          frames: Array.from(window.frames).map(frame => ({
+            path: frame.location.pathname,
+            ready: frame.document.readyState,
+            api: typeof frame.__y3InventoryPresentation,
+            injections: frame.__fixtureInjections,
+            metadata: frame.__y3InventoryPresentation?.parseInventorySummary(frame.document),
+            matrices: Array.from(frame.document.querySelectorAll('table')).map(table => !!frame.__y3InventoryPresentation?.parseInventoryTable(table)),
+          })),
+        }));
+        throw new Error(`${item.key}: ${error.message}; fixture status ${JSON.stringify(status)}`, { cause: error });
+      });
+      panes = await page.evaluate(discovery);
+      assert.equal(panes.filter(pane => pane.kind === 'result').length, 1, `${item.key}: one inventory result must replace generic result 1/2 panes`);
+      const expectedIndex = (item.navigation ? 1 : 0) + (item.reverse ? 1 : 0);
+      assert.deepEqual(panes.find(pane => pane.kind === 'result').path, [expectedIndex], `${item.key}: frame order must not determine which result is metadata`);
+      assert.equal(await metadataFrame.locator('[data-y3client-inventory-primary]').count(), 1);
+      assert.equal(await matrixFrame.locator('[data-y3client-inventory-secondary]').count(), 1);
+      assert.equal(await metadataFrame.locator('[data-y3client-result-card]').count(), 0, `${item.key}: metadata must not become a false product/timestamp card`);
+      assert.equal(await metadataFrame.locator('[data-y3client-inventory-size-row]').count(), rowSizes.length * 2);
+      assert.equal(await metadataFrame.locator('#inventory-summary').count(), 1);
+      assert.equal(await matrixFrame.locator('#T01_H,#T01_B').count(), 2);
+      if (item.navigation) {
+        await metadataFrame.getByRole('button', { name: '検索条件を変更', exact: true }).click();
+        const navigation = page.frames().find(frame => frame.url() === origin + item.navigationPath);
+        assert(navigation);
+        assert.equal(await navigation.evaluate(() => window.fixtureSearchClicks || 0), 1, 'Alternate ASP families must retain their original search action');
+      }
+    } else {
+      assert.equal(await metadataFrame.locator('[data-y3client-inventory]').count(), 0, 'A different product must keep the original fallback view');
+      assert.equal(await metadataFrame.locator('[data-y3client-result-card]').count(), 0, 'Unmerged metadata must not be flattened into a false result card');
+      assert.equal(await metadataFrame.locator('#inventory-summary').isVisible(), true);
+      const expectedMetadata = panes.find(pane => pane.path[0] === (item.reverse ? 1 : 0));
+      assert(expectedMetadata && expectedMetadata.kind !== 'result', 'Fallback metadata is a control/summary document, not a second inventory result');
+    }
+    assert.equal(unknown.length, 0, 'Family fixtures must never send live requests');
+    reports.push({ family: item.key, merged: !item.mismatched, parsedDocumentInjection: true });
+    await context.close();
+  }
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  await context.route('**/*', async route => {
+    const body = fixtures.get(route.request().url());
+    if (body === undefined) { await route.abort(); throw new Error('Unexpected daily fixture request'); }
+    await route.fulfill({ contentType: 'text/html; charset=utf-8', body: withDocumentEndScripts(body) });
+  });
+  const page = await context.newPage();
+  await page.goto(origin + dailyPaths.root);
+  const panes = await page.evaluate(script('discoverFrames'));
+  assert.equal(panes.filter(pane => pane.kind === 'result').length, 2, 'Non-inventory daily reports must retain their distinct result panes');
+  for (const frame of page.frames()) assert.equal(await frame.locator('[data-y3client-inventory-primary],[data-y3client-inventory-secondary],[data-y3client-inventory]').count(), 0, 'A complex daily report must not be classified as an inventory matrix');
+  const dailyFrame = page.frames().find(frame => frame.url() === origin + dailyPaths.matrix);
+  assert(dailyFrame);
+  assert.equal(await dailyFrame.locator('#daily-complex').count(), 1);
+  assert((await dailyFrame.locator('#daily-complex').textContent()).includes('12,000'));
+  assert.equal(await dailyFrame.locator('#daily-complex').isVisible(), true, 'Original daily complex table must remain available');
+  await context.close();
+  return reports;
 }
 
 async function checkStaffAutofill(browser) {
@@ -271,6 +416,10 @@ async function main() {
   const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE || '/usr/bin/chromium', args: ['--no-sandbox'] });
   const reports = [];
   try {
+    if (process.env.INVENTORY_FAMILY_ONLY === '1') {
+      console.log(JSON.stringify({ families: await checkInventoryFamilies(browser) }, null, 2));
+      return;
+    }
     for (const width of [390, 350, 320]) {
       const context = await browser.newContext({ viewport: { width, height: 844 }, isMobile: true, hasTouch: true });
       const unknown = [];
@@ -450,8 +599,9 @@ async function main() {
     assert.equal(await page.content(), outsideBefore, 'Untrusted-origin DOM must remain unchanged');
     if (!standalone) await checkCombinedInventory(context);
     await context.close();
+    const families = standalone ? [] : await checkInventoryFamilies(browser);
     const login = await checkStaffAutofill(browser);
-    console.log(JSON.stringify({ inventoryFeatures: reports, transposedMatrix: true, combinedFrames: !standalone, untrustedOriginUntouched: true, login, screenshots: output }, null, 2));
+    console.log(JSON.stringify({ inventoryFeatures: reports, transposedMatrix: true, combinedFrames: !standalone, families, nonInventoryReportsPreserved: !standalone, untrustedOriginUntouched: true, login, screenshots: output }, null, 2));
   } finally { await browser.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
