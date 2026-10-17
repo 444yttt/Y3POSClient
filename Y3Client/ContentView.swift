@@ -1,19 +1,21 @@
 import SwiftUI
+import UIKit
 import WebKit
 
 @MainActor
 struct ContentView: View {
     @ObservedObject var browser: BrowserModel
+    @State private var keyboardVisible = false
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                BrowserHeader(browser: browser)
+                BrowserHeader(browser: browser, keyboardVisible: keyboardVisible)
                 BrowserSurface(browser: browser, webView: browser.activeWebView)
             }
                 .toolbar(.hidden, for: .navigationBar)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if !browser.framePanes.isEmpty && browser.failure == nil {
+                    if !keyboardVisible && !browser.framePanes.isEmpty && browser.failure == nil {
                         BrowserControls(browser: browser)
                     }
                 }
@@ -37,12 +39,25 @@ struct ContentView: View {
         }
         .tint(Color.primary)
         .onAppear { browser.start() }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+            guard browser.sheet == nil,
+                  let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .filter { $0.activationState == .foregroundActive }.flatMap(\.windows)
+            guard let window = windows.first(where: \.isKeyWindow) else { return }
+            let localFrame = window.screen.coordinateSpace.convert(frame, to: window)
+            keyboardVisible = window.bounds.intersection(localFrame).height > 0
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardVisible = false
+        }
     }
 }
 
 @MainActor
 private struct BrowserHeader: View {
     @ObservedObject var browser: BrowserModel
+    let keyboardVisible: Bool
 
     private var screenTitle: String {
         if browser.needsLogin { return "ログイン" }
@@ -75,6 +90,11 @@ private struct BrowserHeader: View {
                 .lineLimit(1)
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 0)
+            if keyboardVisible {
+                Button("キーボードを閉じる", systemImage: "keyboard.chevron.compact.down", action: browser.dismissKeyboard)
+                    .labelStyle(.iconOnly)
+                    .frame(width: 44, height: 44)
+            }
             BrowserMoreMenu(browser: browser)
         }
         .padding(.horizontal, 14)
@@ -143,7 +163,7 @@ struct BrowserSurface: View {
                         Button("接続設定") { browser.showSettings = true }
                     }
                 }
-                if browser.loading {
+                if browser.loading && browser.failure == nil {
                     ProgressView(value: browser.progress).progressViewStyle(.linear)
                         .accessibilityLabel("読み込み中")
                 }
@@ -171,6 +191,7 @@ struct BrowserSurface: View {
 @MainActor
 struct BrowserControls: View {
     @ObservedObject var browser: BrowserModel
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var selectedPane: FramePane? { browser.framePanes.first { $0.id == browser.selectedFramePaneID } }
     private var hasConditions: Bool { browser.framePanes.contains { $0.kind == .condition } }
@@ -178,6 +199,20 @@ struct BrowserControls: View {
     private var exportPane: FramePane? { browser.framePanes.first { $0.kind == .export } }
 
     var body: some View {
+        ViewThatFits(in: .horizontal) {
+            controlItems
+            ScrollView(.horizontal, showsIndicators: false) {
+                controlItems
+            }
+            .accessibilityHint("左右にスクロールして操作を選べます")
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(Color(.systemBackground))
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    private var controlItems: some View {
         HStack(spacing: 0) {
             action("メニュー", symbol: "square.grid.2x2", selected: false, action: browser.home)
             if hasConditions {
@@ -187,15 +222,13 @@ struct BrowserControls: View {
             if hasResults {
                 action("結果", symbol: "list.bullet.rectangle", selected: selectedPane?.kind == .result,
                        action: browser.focusResults)
-            } else if let exportPane {
+            }
+            if let exportPane {
                 action("書き出し", symbol: "square.and.arrow.up", selected: selectedPane?.kind == .export) {
                     browser.focusFramePane(exportPane)
                 }
             }
         }
-        .padding(.horizontal, 10).padding(.vertical, 5)
-        .background(Color(.systemBackground))
-        .overlay(alignment: .top) { Divider() }
     }
 
     private func action(_ title: String, symbol: String, selected: Bool, action: @escaping () -> Void) -> some View {
@@ -203,9 +236,10 @@ struct BrowserControls: View {
             VStack(spacing: 4) {
                 Image(systemName: symbol).font(.system(size: 17, weight: selected ? .semibold : .regular))
                 Text(title).font(.caption.weight(selected ? .semibold : .regular))
+                    .lineLimit(1).fixedSize(horizontal: true, vertical: false)
             }
             .foregroundStyle(selected ? Color.primary : Color.secondary)
-            .frame(maxWidth: .infinity, minHeight: 48)
+            .frame(minWidth: dynamicTypeSize.isAccessibilitySize ? 100 : 72, maxWidth: .infinity, minHeight: 48)
             .background(selected ? Color(.secondarySystemBackground) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
             .contentShape(Rectangle())
         }

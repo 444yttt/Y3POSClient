@@ -28,6 +28,16 @@ const fixtures = new Map([
   [primary + '/fixture/unknown-external', '<html><head></head><frameset rows="*,*"><frame name="local" src="/fixture/a"><frame name="unknown" src="https://example.invalid/frame"></frameset></html>'],
   ['https://example.invalid/frame', '<html><head></head><body>Untrusted fixture</body></html>'],
 ]);
+const exportServices = {210:'hanbai',240:'move',280:'sku_stok',300:'hanbai_ruikei'};
+for (const [family, service] of Object.entries(exportServices)) {
+  fixtures.set(primary + `/scripts/verona/display/dstz${family}_2.asp`, `<html><head></head><frameset rows="90,*"><frame name="dstz${family}_2_1" src="/fixture/header"><frame name="dstz${family}_2_2" src="${secondary}/dataspider/trigger/${service}.asp"></frameset></html>`);
+  fixtures.set(secondary + `/dataspider/trigger/${service}.asp`, fixtures.get(secondary + '/dataspider/trigger/hanbai.asp'));
+}
+for (const family of ['710','730']) {
+  fixtures.set(primary + `/scripts/verona/display/dstz${family}_2.asp`, `<html><head></head><frameset rows="90,*"><frame name="dstz${family}_3_1" src="/fixture/header"><frame name="dstz${family}_3_2" src="/scripts/verona/display/dstz${family}_3_2.asp"></frameset></html>`);
+  fixtures.set(primary + `/scripts/verona/display/dstz${family}_3_2.asp`, fixtures.get(secondary + '/dataspider/trigger/hanbai.asp'));
+}
+fixtures.set(secondary + '/dataspider/trigger/unrecognized.asp', fixtures.get(secondary + '/dataspider/trigger/hanbai.asp'));
 
 (async () => {
   const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE, args: ['--no-sandbox'] });
@@ -100,6 +110,22 @@ const fixtures = new Map([
     assert.deepEqual(await exporter.locator('a').allTextContents(), ['CSVを保存', 'Excelを保存', 'Untouched']);
     assert.equal(await exporter.locator('a[download]').count(), 2);
     assert.equal(await exporter.locator('a').first().getAttribute('href'), primary + '/scripts/verona/download/fixture.csv');
+
+    for (const family of ['210','240','280','300','710','730']) {
+      await page.goto(primary + `/scripts/verona/display/dstz${family}_2.asp`);
+      await adapt();
+      assert.deepEqual(await page.evaluate(scripts.discoverFrames), [{path:[0],kind:'navigation'},{path:[1],kind:'export'}], `Export ${family} must expose its output pane`);
+      assert.equal(await focus([1]), true);
+      assert.equal(await page.locator('frameset').getAttribute('rows'), '0,*');
+      assert.equal(await focus(null), true);
+      assert.equal(await page.locator('frameset').getAttribute('rows'), '90,*');
+      const output = page.frames().find(frame => frame.name() === `dstz${family}${['710','730'].includes(family)?'_3_2':'_2_2'}`);
+      assert.deepEqual(await output.locator('a').allTextContents(), ['CSVを保存','Excelを保存','Untouched']);
+      assert.equal(await output.locator('a[download]').count(), 2);
+    }
+    await page.goto(secondary + '/dataspider/trigger/unrecognized.asp');
+    await adapt();
+    assert.equal(await page.locator('[data-y3client-phone]').count(), 0, 'Unknown export service paths must remain outside adaptation');
 
     await page.goto(primary + '/fixture/unknown-external');
     assert.deepEqual(await page.evaluate(scripts.discoverFrames), [{ path: [0], kind: 'result' }]);

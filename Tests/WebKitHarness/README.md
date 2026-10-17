@@ -21,6 +21,13 @@ The matrix is constructed by the fixture's own `window.load` listener. The produ
 - Raw fallback styles, source-handler proxying after an identical same-document table replacement, and preservation of the selected table mode.
 - Isolated staff arguments filling only the matching main document and never submitting.
 - Store-guide mappings for footwear, category-specific apparel, socks and one-size codes; blank US women cells remain unknown. Six footwear unit choices and UK/US women switching preserve every size row and primary/detail stock value.
+- Same-product searches wait for both metadata and matrix generations, in either arrival order, including identical-text source replacements.
+- Unit switches and the stock filter retain keyboard focus when their controls are rerendered.
+- Select/radio-only frame searches have individual accessible names and phone-sized controls, preserve original handlers/hidden fields, and track a real loopback POST and its ready result.
+- A generic result containing an original `PgSelect` pager still becomes ready after the search POST and after its own page POST; both submissions retain the result frame role and increment readiness once.
+- Frozen table header/body scroll in both directions; a narrower header cannot pull the wider body away from its final columns.
+- The shared fictional compound form retains its malformed parser-assigned FORM ownership, every ancestor and duplicate field, aligned dates/five-slot rows, accessible names and unchanged datepicker at 390/320px; helper/selector handlers and all duplicate POST values remain intact.
+- Interactive row-action reports scroll in place at 320px, including nested layouts and frozen header variants, while retaining original table/form/control nodes and duplicate-field POSTs.
 
 These tests must pass under `xcodebuild test` on an actual iOS Simulator. Linux grammar/project checks or a Chromium run do not count as their execution result. The selected runtime is recorded in `devices.json`; Xcode 16.4 normally runs the iOS 18.5 simulator. Testing an iOS 17 runtime requires installing/selecting that runtime separately.
 

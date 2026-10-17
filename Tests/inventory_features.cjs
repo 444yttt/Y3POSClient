@@ -185,10 +185,21 @@ async function checkCombinedInventory(context) {
   assert.equal(await matrixFrame.locator('#T01_H').count(), 1);
   assert.equal(await matrixFrame.locator('#T01_B').count(), 1, 'Both original grid clones must remain connected for fallback');
   assert.equal(await metadataFrame.locator('#pager-form').count(), 1, 'The original pager must remain connected');
+  const unitButton = metadataFrame.locator('[data-y3client-size-unit="US"]');
+  await unitButton.focus();
+  await unitButton.click();
+  assert.equal(await metadataFrame.evaluate(() => document.activeElement.getAttribute('data-y3client-size-unit')), 'US', 'Unit changes must retain keyboard focus on the replacement unit button');
+  const stockFilter = metadataFrame.locator('[data-y3client-inventory-stock-filter]');
+  await stockFilter.focus();
+  await stockFilter.check();
+  assert.equal(await metadataFrame.evaluate(() => document.activeElement.hasAttribute('data-y3client-inventory-stock-filter')), true, 'Stock filtering must retain focus on the replacement checkbox');
+  await stockFilter.uncheck();
   const originalTableStyle = await matrixFrame.locator('#T01_H').getAttribute('style');
+  await metadataFrame.locator('[data-y3client-inventory-table-button]').focus();
   await metadataFrame.locator('[data-y3client-inventory-table-button]').click();
   const raw = metadataFrame.locator('[data-y3client-inventory-raw]');
   assert.equal(await raw.isVisible(), true, 'The table fallback should appear in the same primary result frame');
+  assert.equal(await metadataFrame.evaluate(() => document.activeElement.matches('[data-y3client-inventory-raw] [data-y3client-inventory-back]')), true, 'Switching to the raw table must focus its visible return button');
   assert.equal(await metadataFrame.locator('[data-y3client-inventory]:visible,[data-y3client-inventory-raw]:visible').count(), 1);
   assert.equal(await raw.locator('table').count(), 1, 'Only one source table should be copied for fallback');
   assert.equal(await raw.locator('tr').count(), 3 + (rowSizes.length + 1) * 4, 'The full header clone and body clone must not double fallback rows');
@@ -209,12 +220,14 @@ async function checkCombinedInventory(context) {
   });
   await page.evaluate(() => window.__y3ClientInventoryMerge.reconcile());
   assert.equal(await raw.isVisible(), true, 'An identical-data grid replacement should retain the selected table mode');
+  assert.equal(await metadataFrame.evaluate(() => document.activeElement.matches('[data-y3client-inventory-raw] a')), true, 'A refreshed raw table must retain focus on its replacement link');
   await raw.locator('a').click();
   assert.equal(await matrixFrame.evaluate(() => window.fixtureTransposedClicks || 0), 2, 'An identical-data grid replacement must proxy the new connected link exactly once');
   assert.equal(await matrixFrame.evaluate(() => !window.fixtureOldSourceTable.isConnected && document.getElementById('T01_H').isConnected), true);
   assert.equal(await matrixFrame.locator('#T01_H').getAttribute('style'), originalTableStyle);
   await metadataFrame.locator('[data-y3client-inventory-raw] [data-y3client-inventory-back]').click({ timeout: 5000 });
   assert.equal(await raw.isVisible(), false);
+  assert.equal(await metadataFrame.evaluate(() => document.activeElement.hasAttribute('data-y3client-inventory-table-button')), true, 'Returning to cards must focus the visible table-mode button');
   assert.equal(await metadataFrame.locator('[data-y3client-inventory]:visible').count(), 1, 'Returning from the table should restore exactly one card result');
   // A native discovery poll is repeatable and must not append another result.
   for (let index = 0; index < 3; index++) await page.evaluate(() => window.__y3ClientInventoryMerge.reconcile());
@@ -243,6 +256,7 @@ async function checkCombinedInventory(context) {
   await metadataFrame.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: path.join(output, 'inventory-combined-frame.png'), fullPage: true });
   await metadataFrame.locator('[data-y3client-inventory-pages] select').selectOption('2');
+  const beforePaging = await page.evaluate(() => window.__y3ClientNavigation.submissionRevision);
   const pageRequest = page.waitForRequest(request => request.url() === origin + '/fixture/page');
   await metadataFrame.getByRole('button', { name: '在庫結果 表示', exact: true }).click();
   const request = await pageRequest;
@@ -252,7 +266,50 @@ async function checkCombinedInventory(context) {
   assert.equal(posted.get('PgSelect'), '2');
   assert.equal(posted.get('unchanged'), 'synthetic-pager-token');
   assert.equal(posted.get('m01_hinban'), 'MOCK-F001', 'The original hidden query fields must not be recreated or modified');
+  assert.equal(await page.evaluate(() => window.__y3ClientNavigation.submissionRevision), beforePaging + 1, 'Generated pager and generic submit observers must advance exactly one request revision');
   await page.close();
+}
+
+async function checkSameProductFreshness(context) {
+  const page = await context.newPage();
+  await page.goto(origin + fixturePaths.combined);
+  await page.evaluate(() => { window.__y3ClientNavigation = { submissionRevision: 1, resultSubmissionRevision: 0 }; });
+  for (const frame of page.frames()) await frame.evaluate(adapt);
+  const metadataFrame = page.frames().find(frame => frame.name() === 'inventory-metadata');
+  const matrixFrame = page.frames().find(frame => frame.name() === 'inventory-matrix');
+  assert(metadataFrame && matrixFrame);
+  await page.evaluate(() => window.__y3ClientInventoryMerge.reconcile());
+  await metadataFrame.waitForSelector('[data-y3client-inventory]');
+  const originalValues = await metadataFrame.locator('[data-y3client-inventory-grid] td').allTextContents();
+  // A refreshed metadata response for the same SKU must not bless the old matrix.
+  await page.evaluate(() => { window.__y3ClientNavigation.submissionRevision = 2; });
+  await metadataFrame.evaluate(() => { document.querySelector('#inventory-summary tr:last-child td:nth-child(2)').textContent = '2026/10/17 18:00:00 現在'; });
+  for (let index = 0; index < 3; index++) assert.equal(await page.evaluate(() => window.__y3ClientInventoryMerge.reconcile()), false, 'Repeated discovery must keep a same-product old matrix pending');
+  assert.equal(await metadataFrame.locator('[data-y3client-inventory]').count(), 0, 'New metadata must not display stock from the previous request');
+  assert(await page.evaluate(() => window.__y3ClientNavigation.resultSubmissionRevision < 2));
+  // A newly loaded matrix with exactly the old values is a legitimate new response.
+  await matrixFrame.goto(origin + fixturePaths.matrixFrame);
+  await matrixFrame.evaluate(adapt);
+  assert.equal(await page.evaluate(() => window.__y3ClientInventoryMerge.reconcile()), true);
+  assert.equal(await page.evaluate(() => window.__y3ClientNavigation.resultSubmissionRevision), 2);
+  assert.deepEqual(await metadataFrame.locator('[data-y3client-inventory-grid] td').allTextContents(), originalValues, 'Fresh identical data must be accepted without altering quantities');
+  // Response ordering can reverse: fresh matrix alone must wait for metadata too.
+  await page.evaluate(() => { window.__y3ClientNavigation.submissionRevision = 3; });
+  await matrixFrame.evaluate(() => { const table = document.getElementById('T01_H'); table.replaceWith(table.cloneNode(true)); });
+  assert.equal(await page.evaluate(() => window.__y3ClientInventoryMerge.reconcile()), false, 'A matrix response arriving first must wait for current metadata');
+  await metadataFrame.evaluate(() => { const table = document.getElementById('inventory-summary'); table.replaceWith(table.cloneNode(true)); });
+  assert.equal(await page.evaluate(() => window.__y3ClientInventoryMerge.reconcile()), true, 'Identical fresh metadata and matrix tables must complete the current request');
+  assert.equal(await page.evaluate(() => window.__y3ClientNavigation.resultSubmissionRevision), 3);
+  // Sites may update existing nodes; changed parsed values prove a new response too.
+  await page.evaluate(() => { window.__y3ClientNavigation.submissionRevision = 4; });
+  await metadataFrame.evaluate(() => { document.querySelector('#inventory-summary tr:last-child td:nth-child(2)').textContent = '2026/10/17 19:00:00 現在'; });
+  await matrixFrame.evaluate(() => { document.getElementById('T01_H').rows[3].cells[3].textContent = '12'; });
+  assert.equal(await page.evaluate(() => window.__y3ClientInventoryMerge.reconcile()), true, 'A real in-place change to both parsed responses must remain supported');
+  assert.equal(await page.evaluate(() => window.__y3ClientNavigation.resultSubmissionRevision), 4);
+  const changedQuantity = await metadataFrame.locator('[data-y3client-inventory-size-row]').first().locator('td').nth(1).innerText();
+  assert.equal(changedQuantity, '12', 'Current in-place stock must be rendered under current metadata');
+  await page.close();
+  return { sameProductStaleMatrixRejected: true, responseOrderIndependent: true, identicalFreshResponsesAccepted: true, inPlaceUpdatesAccepted: true };
 }
 
 function withDocumentEndScripts(html) {
@@ -480,6 +537,25 @@ async function checkSizeGuide(browser) {
     for (const metric of Object.values(matrix.colors[0].metrics)) metric.values = codes.map((_, index) => raw[index % raw.length]);
     const summary = api.parseInventorySummary(document.getElementById('inventory-summary'));
     summary.categoryKey = 'footwear';
+    api.renderInventory(summary, matrix, document.getElementById('combined-target'));
+  }, codes);
+  await page.locator('#original-back').focus();
+  await page.evaluate(() => {
+    const api = window.__y3InventoryPresentation;
+    const matrix = api.parseInventoryTable(document.getElementById('inventory-matrix'));
+    const summary = { ...api.parseInventorySummary(document.getElementById('inventory-summary')), categoryKey: 'footwear' };
+    api.renderInventory(summary, matrix, document.getElementById('combined-target'));
+  });
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'original-back', 'A background inventory refresh must not steal focus from an external control');
+  // Restore the complete guide scenario after the independent background-focus check.
+  await page.evaluate(codes => {
+    const api = window.__y3InventoryPresentation;
+    const matrix = api.parseInventoryTable(document.getElementById('inventory-matrix'));
+    matrix.sizeCodes = codes;
+    matrix.colors = matrix.colors.slice(0, 1);
+    const raw = ['0', '', '-', '-1', '003'];
+    for (const metric of Object.values(matrix.colors[0].metrics)) metric.values = codes.map((_, index) => raw[index % raw.length]);
+    const summary = { ...api.parseInventorySummary(document.getElementById('inventory-summary')), categoryKey: 'footwear' };
     api.renderInventory(summary, matrix, document.getElementById('combined-target'));
   }, codes);
   assert.deepEqual((await page.locator('[data-y3client-size-unit]').evaluateAll(buttons => buttons.map(button => button.getAttribute('data-y3client-size-unit')))).sort(), ['CH', 'EU', 'JP', 'UK', 'US', 'USW']);
@@ -752,11 +828,12 @@ async function main() {
     assert.equal(await page.evaluate(() => typeof window.__y3InventoryPresentation), 'undefined', 'The presentation API must not be installed on another origin');
     assert.equal(await page.content(), outsideBefore, 'Untrusted-origin DOM must remain unchanged');
     if (!standalone) await checkCombinedInventory(context);
+    const freshness = standalone ? null : await checkSameProductFreshness(context);
     await context.close();
     const families = standalone ? [] : await checkInventoryFamilies(browser);
     const guide = standalone ? null : await checkSizeGuide(browser);
     const login = await checkStaffAutofill(browser);
-    console.log(JSON.stringify({ inventoryFeatures: reports, transposedMatrix: true, combinedFrames: !standalone, families, guide, nonInventoryReportsPreserved: !standalone, untrustedOriginUntouched: true, login, screenshots: output }, null, 2));
+    console.log(JSON.stringify({ inventoryFeatures: reports, transposedMatrix: true, combinedFrames: !standalone, freshness, families, guide, nonInventoryReportsPreserved: !standalone, untrustedOriginUntouched: true, login, screenshots: output }, null, 2));
   } finally { await browser.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

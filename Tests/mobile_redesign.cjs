@@ -25,10 +25,20 @@ const pages = {
   menu: '/scripts/verona/menu/metz010_1.asp',
   nestedMenu: '/scripts/verona/menu/metz010_2.asp',
   form: '/scripts/verona/dwh/prtz011_1.asp',
+  choiceForm: '/scripts/verona/dwh/prtz099_1.asp',
+  compoundForm: '/scripts/verona/print/prtz098_1_1.asp',
+  actionReport: '/scripts/verona/print/prtz097_2.asp',
+  nestedActionReport: '/scripts/verona/print/prtz096_2.asp',
+  clonedActionReport: '/scripts/verona/print/prtz095_2.asp',
+  frozenActionReport: '/scripts/verona/print/prtz094_2.asp',
+  splitActionReport: '/scripts/verona/print/prtz093_2.asp',
+  summaryPager: '/scripts/verona/print/prtz092_2.asp',
   stock: '/scripts/verona/dwh/prtz011_2.asp',
   daily: '/scripts/verona/dwh/prtz030_2_2.asp',
 };
 const fixtures = new Map([
+  [origin + pages.compoundForm, fs.readFileSync(path.join(__dirname,'fixtures/compound-form.html'),'utf8')],
+  ...[['actionReport','action-report'],['nestedActionReport','nested-action-report'],['clonedActionReport','frozen-action-clone'],['frozenActionReport','frozen-action-header'],['splitActionReport','frozen-action-split']].map(([kind,file])=>[origin+pages[kind],fs.readFileSync(path.join(__dirname,'fixtures/maintenance-'+file+'.html'),'utf8')]),
   [origin + pages.menu, shell(`
     <script>function funcLinkSend(name,color){window.fixtureMenuClicks=(window.fixtureMenuClicks||0)+1;document.forms.frmForm.Title.value=name;document.forms.frmForm.ColorSEQ.value=color;document.forms.frmForm.requestSubmit();return false}</script>
     <form id="menu-form" name="frmForm" action="/fixture/menu-post" method="post" target="fixtureResults"><input type="hidden" name="Title" value=""><input type="hidden" name="ColorSEQ" value=""><input type="hidden" name="unchanged" value="synthetic-token"></form>
@@ -69,6 +79,26 @@ const fixtures = new Map([
     <span id="layer0" style="display:none;position:absolute;left:91px;top:91px;width:400px;height:200px"><iframe name="fraHinbanSearch" src="/fixture/helper" width="400" height="200"></iframe></span>
     <iframe name="fixtureResults" src="/fixture/empty" hidden></iframe>
   `)],
+  [origin + pages.choiceForm, shell(`
+    <h2>セレクトと選択肢だけの検索条件（架空データ）</h2>
+    <form id="select-only-form" method="post" action="/fixture/search-post" target="fixtureResults">
+      <input type="hidden" name="unchanged" value="select-only-synthetic">
+      <table width="770"><tr><td>対象店舗</td><td><select id="choice-shop" name="shop" onchange="window.fixtureShopChanges=(window.fixtureShopChanges||0)+1"><option value="all">全店舗</option><option value="west">架空店舗 西</option><option value="closed" disabled>架空休業店舗</option></select></td></tr>
+      <tr><td>固定条件</td><td><select id="disabled-shop" name="disabled_shop" disabled><option value="disabled">変更できない条件</option></select></td></tr>
+      <tr><td colspan="2"><input id="select-only-submit" type="submit" value="検索"></td></tr></table>
+    </form>
+    <form id="choice-only-form" method="post" action="/fixture/search-post" target="fixtureResults">
+      <input type="hidden" name="unchanged" value="choice-only-synthetic">
+      <table width="770"><tr><td>表示区分</td><td><input id="bare-radio-total" type="radio" name="mode" value="total" checked>集計 <input id="bare-radio-detail" type="radio" name="mode" value="detail">明細</td></tr>
+      <tr><td>出力項目</td><td><input id="bare-check-sales" type="checkbox" name="sales" value="1">販売数</td></tr>
+      <tr><td colspan="2"><input id="choice-only-submit" type="submit" value="検索"></td></tr></table>
+    </form><iframe name="fixtureResults" src="/fixture/empty" hidden></iframe>
+  `)],
+  [origin + pages.summaryPager, shell(`
+    <table id="report-summary" width="800"><tr><td class="selecttitle">架空店舗</td><td>架空の長い名称を持つテスト専用店舗です</td><td class="selecttitle">架空期間</td><td>2026年10月</td></tr><tr><td class="selecttitle">品番</td><td>FX0003</td><td class="selecttitle">作成日付</td><td>2026/10/17</td></tr></table>
+    <table id="report-pager" cellspacing="4"><form id="report-pager-form" action="/fixture/page-post" method="post" target="fixtureResults"><tr><td nowrap><select name="PageNum"><option value="1">1</option><option value="2">2</option></select></td><td width="60"><input id="report-pager-show" type="button" value="表示" onclick="document.getElementById('report-pager-form').requestSubmit()"></td><td width="70"><input type="submit" name="previous" value="前へ" disabled></td><td width="70"><input type="submit" name="next" value="次へ"></td><td width="300" nowrap>架空の結果をページごとに表示します。説明が長くても操作項目を画面の外へ押し出さないことを確認します。</td><input type="hidden" name="fixture_token" value="fictional-page-token"></tr></form></table>
+    <iframe name="fixtureResults" src="/fixture/empty" hidden></iframe>
+  `)],
   [origin + pages.stock, shell(`
     <a href="/scripts/verona/menu/metz010_1.asp" target="_top">メニュー選択画面</a><h2>在庫照会結果（架空データ）</h2>
     <form id="pager-form" name="form1" method="post" action="/fixture/page-post"><input type="hidden" name="m01_hinban" value="MOCK-A001"><input type="hidden" name="PageCount" value="1"><input type="hidden" name="PgMax" value="2"><select id="page-select" name="PgSelect" onchange="window.fixturePageChanges=(window.fixturePageChanges||0)+1"><option value="1">1</option><option value="2">2</option></select></form>
@@ -92,12 +122,23 @@ const fixtures = new Map([
   [origin + '/fixture/page-post', shell('<p>架空ページPOST受信</p>')],
   [origin + '/fixture/export', shell('<p>架空エクスポート</p>')],
   [origin + '/fixture/detail', shell('<p>架空商品詳細</p>')],
+  [origin + '/fixture/compound-post', shell('<p>架空複合条件POST受信</p>')],
+  [origin + '/fixture/post', shell('<p>架空操作付き照会POST受信</p>')],
 ]);
 const framedCondition = '/scripts/verona/print/prtz030_1_1.asp';
 const framedResult = '/scripts/verona/print/prtz030_2_2.asp';
 fixtures.set(origin + '/fixture/framed', `<html><head><title>架空フレーム帳票</title></head><frameset rows="115,*"><frame name="prtz030_1_1" src="${framedCondition}"><frame name="prtz030_2" src="${framedResult}"></frameset></html>`);
 fixtures.set(origin + framedCondition, shell(`<form id="framed-search" name="form1" method="post" action="${framedResult}" target="prtz030_2"><table width="540"><tr><td>日付</td><td><input type="text" name="ft_YYYYMMDD_F" value="20261011"><input type="text" name="ft_YYYYMMDD_T" value="20261011"></td></tr><tr><td colspan="2"><input id="framed-submit" type="submit" value="検索"></td></tr></table><input type="hidden" name="synthetic_session" value="unchanged"></form>`));
-fixtures.set(origin + framedResult, shell('<table id="framed-result-table" width="650"><tr><th>日付</th><th>品番</th><th>数量</th><th>金額</th></tr><tr><td>2026/10/11</td><td>MOCK-A001</td><td>3</td><td>12,000</td></tr><tr><td>2026/10/11</td><td>MOCK-A002</td><td>1</td><td>4,000</td></tr><tr><td>2026/10/11</td><td>MOCK-A003</td><td>2</td><td>8,000</td></tr><tr><td>2026/10/11</td><td>MOCK-A004</td><td>1</td><td>4,000</td></tr><tr><td>2026/10/11</td><td>MOCK-A005</td><td>1</td><td>4,000</td></tr></table>'));
+fixtures.set(origin + framedResult, shell('<form id="framed-result-pager"><select name="PgSelect"><option value="1">1</option><option value="2">2</option></select></form><table id="framed-result-table" width="650"><tr><th>日付</th><th>品番</th><th>数量</th><th>金額</th></tr><tr><td>2026/10/11</td><td>MOCK-A001</td><td>3</td><td>12,000</td></tr><tr><td>2026/10/11</td><td>MOCK-A002</td><td>1</td><td>4,000</td></tr><tr><td>2026/10/11</td><td>MOCK-A003</td><td>2</td><td>8,000</td></tr><tr><td>2026/10/11</td><td>MOCK-A004</td><td>1</td><td>4,000</td></tr><tr><td>2026/10/11</td><td>MOCK-A005</td><td>1</td><td>4,000</td></tr></table>'));
+const choiceFramedCondition = '/scripts/verona/print/prtz031_1_1.asp';
+const choiceFramedResult = '/scripts/verona/print/prtz031_2_2.asp';
+fixtures.set(origin + '/fixture/choice-framed', `<html><head></head><frameset rows="115,*"><frame name="prtz031_1_1" src="${choiceFramedCondition}"><frame name="prtz031_2" src="${choiceFramedResult}"></frameset></html>`);
+fixtures.set(origin + choiceFramedCondition, shell(`
+  <form id="framed-selector" method="post" action="${choiceFramedResult}" target="prtz031_2"><input type="hidden" name="kind" value="select"><table width="770"><tr><td>店舗</td><td><select name="shop"><option value="all">全店舗</option><option value="west">架空店舗 西</option></select></td></tr><tr><td colspan="2"><input id="framed-selector-submit" type="submit" value="検索"></td></tr></table></form>
+  <form id="framed-choices" method="post" action="${choiceFramedResult}" target="prtz031_2"><input type="hidden" name="kind" value="choices"><table width="770"><tr><td>表示区分</td><td><input type="radio" name="mode" value="detail" checked>明細 <input type="checkbox" name="sales" value="1" checked>販売数</td></tr><tr><td colspan="2"><input type="submit" value="検索"></td></tr></table></form>
+  <form id="framed-textarea" method="post" action="${choiceFramedResult}" target="prtz031_2"><input type="hidden" name="kind" value="textarea"><table width="770"><tr><td>検索語</td><td><textarea name="query">架空商品</textarea></td></tr><tr><td colspan="2"><input type="submit" value="検索"></td></tr></table></form>
+`));
+fixtures.set(origin + choiceFramedResult, fixtures.get(origin + framedResult));
 const lateGrid = '/scripts/verona/dwh/prtz099_2.asp';
 fixtures.set(origin + lateGrid, shell(`
   <h2>在庫照会結果（遅いグリッド初期化）</h2>
@@ -152,12 +193,14 @@ async function main() {
       const requests = [];
       const unknown = [];
       let framedPosts = 0;
+      let choiceFramedPosts = 0;
       await context.route('**/*', async route => {
         const request = route.request();
         let body = fixtures.get(request.url());
         if (body === undefined) { unknown.push(request.url()); await route.abort(); return; }
         if (request.method() === 'POST') requests.push({ url: request.url(), body: new URLSearchParams(request.postData() || '') });
         if (request.url() === origin + framedResult && request.method() === 'POST') body = body.replace('<html lang="ja">', `<html lang="ja" data-fixture-post="${++framedPosts}">`);
+        if (request.url() === origin + choiceFramedResult && request.method() === 'POST') body = body.replace('<html lang="ja">', `<html lang="ja" data-fixture-post="${++choiceFramedPosts}">`);
         await route.fulfill({ contentType: 'text/html; charset=utf-8', body });
       });
       const page = await context.newPage();
@@ -254,6 +297,118 @@ async function main() {
           assert.equal(await page.locator('#radio-total').isChecked(), true);
           assert.equal(await page.locator('#check-sales').isChecked(), false);
         }
+        if (kind === 'choiceForm') {
+          assert.equal(await page.locator('form[data-y3client-mobile-form="search"]').count(), 2, 'Select-only and choice-only forms need the same phone layout as text search forms');
+          assert.equal(await page.getByRole('combobox', { name: '対象店舗', exact: true }).count(), 1);
+          assert.equal(await page.getByRole('radio', { name: '集計', exact: true }).count(), 1, 'The row heading must not override a generated option label');
+          assert.equal(await page.getByRole('radio', { name: '明細', exact: true }).count(), 1);
+          assert.equal(await page.getByRole('checkbox', { name: '販売数', exact: true }).count(), 1);
+          assert.equal(await page.locator('#disabled-shop').isDisabled(), true, 'Presentation must retain disabled form controls');
+          assert.equal(await page.locator('#choice-shop option[value="closed"]').isDisabled(), true);
+          const choiceBounds = await page.locator('#choice-shop,#disabled-shop,#select-only-submit,#choice-only-submit,label[for^="bare-"]').evaluateAll(elements => elements.map(element => { const rect=element.getBoundingClientRect(); return { left:rect.left,right:rect.right,height:rect.height }; }));
+          assert(choiceBounds.every(rect => rect.left >= 0 && rect.right <= width + 1 && rect.height >= 44), 'Selectors, choice labels and actions must fit the phone with usable touch targets');
+          await page.locator('#choice-shop').selectOption('west');
+          assert.equal(await page.evaluate(() => fixtureShopChanges), 1, 'Select-only forms must preserve their change handlers');
+          const selectPost = page.waitForRequest(request => request.url() === origin + '/fixture/search-post');
+          await page.locator('#select-only-submit').click();
+          const selected = new URLSearchParams((await selectPost).postData());
+          assert.equal(selected.get('shop'), 'west');
+          assert.equal(selected.get('unchanged'), 'select-only-synthetic');
+          assert.equal(selected.has('disabled_shop'), false);
+          await page.locator('label[for="bare-radio-detail"]').click();
+          await page.locator('label[for="bare-check-sales"]').click();
+          await page.evaluate(scripts.adapt);
+          assert.equal(await page.getByRole('radio', { name: '明細', exact: true }).isChecked(), true, 'Reapplying presentation must retain selected choices and their names');
+          assert.equal(await page.getByRole('checkbox', { name: '販売数', exact: true }).isChecked(), true);
+          assert.equal(await page.locator('label[for^="bare-"]').count(), 3, 'Reapplying presentation must not duplicate option labels');
+          const choicePost = page.waitForRequest(request => request.url() === origin + '/fixture/search-post');
+          await page.locator('#choice-only-submit').click();
+          const choices = new URLSearchParams((await choicePost).postData());
+          assert.equal(choices.get('mode'), 'detail');
+          assert.equal(choices.get('sales'), '1');
+          assert.equal(choices.get('unchanged'), 'choice-only-synthetic');
+          assert.equal(await page.locator('#choice-only-form').getAttribute('target'), 'fixtureResults');
+        }
+        if (kind === 'compoundForm') {
+          const preservation = () => page.evaluate(() => {
+            const current=Array.from(fixtureCompound.form.elements);
+            return current.length===fixtureCompound.controls.length&&current.every((control,index)=>control===fixtureCompound.controls[index]&&control.form===fixtureCompound.form&&fixtureCompound.ancestors[index].every((ancestor,depth)=>{let parent=control.parentElement;for(let i=0;i<depth;i++)parent=parent.parentElement;return parent===ancestor;}));
+          });
+          assert.equal(await preservation(),true,'Compound presentation must preserve parser-assigned FORM ownership, original element order and every ancestor');
+          assert.equal(await page.locator('[data-y3client-compound-cell]').count(),2);
+          assert.equal(await page.getByRole('textbox',{name:'架空期間 開始日',exact:true}).count(),1);
+          assert.equal(await page.getByRole('textbox',{name:'架空期間 終了日',exact:true}).count(),1);
+          assert.equal(await page.getByRole('textbox',{name:'架空分類 3',exact:true}).count(),1);
+          const layout=await page.evaluate(()=>{
+            const box=node=>{const rect=node.getBoundingClientRect();return{left:rect.left,right:rect.right,top:rect.top,height:rect.height};};
+            return{date:Array.from(document.querySelectorAll('#fixture-date-start,#fixture-date-end')).map(box),codes:Array.from(document.querySelectorAll('[name="fixtureCode"]')).map(box),controls:Array.from(document.querySelectorAll('#fixture-compound-table input:not([type="hidden"]),#fixture-compound-table select')).map(box)};
+          });
+          assert.equal(layout.date[0].top,layout.date[1].top,'FONT-wrapped start/end dates belong on the same row');
+          assert.equal(new Set(layout.codes.map(rect=>rect.top)).size,1,'Five short codes should form one compact labeled row');
+          assert(layout.controls.every(rect=>rect.left>=0&&rect.right<=width+1&&rect.height>=44),'Every compound field and action must remain reachable at phone width');
+          assert.equal(await page.locator('.ui-datepicker-calendar[data-y3client-result-list],#ui-datepicker-div [data-y3client-result-tools],#ui-datepicker-div [data-y3client-table-scroll]').count(),0,'A datepicker is an interactive calendar, not a result report');
+          await page.locator('#fixture-code-help').click();
+          assert.deepEqual(await page.evaluate(()=>fixtureHelperCalls),['code']);
+          await page.locator('#fixture-season').selectOption('fictional-b');
+          assert.equal(await page.evaluate(()=>fixtureSeasonChanges),1);
+          await page.locator('#fixture-code-3').fill('Z3');
+          await page.evaluate(scripts.adapt);
+          assert.equal(await preservation(),true);
+          assert.equal(await page.locator('[data-y3client-compound-label]').count(),6,'Reapplying must not duplicate group labels');
+          const pending=page.waitForRequest(request=>request.url()===origin+'/fixture/compound-post');
+          await page.locator('#fixture-search').click();
+          const posted=new URLSearchParams((await pending).postData());
+          assert.deepEqual(posted.getAll('fixtureSub'),['A1','A2','A3','A4','A5']);
+          assert.deepEqual(posted.getAll('fixtureCode'),['Q1','Q2','Z3','Q4','Q5']);
+          assert.equal(posted.get('fixtureYYYYMMDD_F'),'20261001');
+          assert.equal(posted.get('fixtureYYYYMMDD_T'),'20261003');
+          assert.equal(posted.get('fixtureSeason'),'fictional-b');
+          assert.equal(posted.get('fixture_token'),'fictional-unchanged');
+          assert.equal(await page.evaluate(()=>fixtureSubmitCalls),1);
+          await page.locator('#fixture-reset').click();
+          assert.equal(await page.locator('#fixture-code-3').inputValue(),'Q3');
+          assert.equal(await page.locator('#fixture-season').inputValue(),'fictional-a');
+        }
+        if(kind==='summaryPager'){
+          assert.equal(await page.locator('#report-summary').getAttribute('data-y3client-report-summary'),'');
+          assert.equal(await page.locator('#report-summary [data-y3client-result-card]').count(),0,'Alternating labels/values describe one report, not invented records');
+          assert.equal(await page.locator('#report-pager').getAttribute('data-y3client-pager-table'),'');
+          assert.equal(await page.getByRole('combobox',{name:'ページ',exact:true}).count(),1,'A page selector must not be named after the explanatory note');
+          const original=await page.locator('#report-pager-form').evaluate(form=>Array.from(form.elements).every(control=>control.form===form));
+          assert.equal(original,true);
+          const bounds=await page.locator('#report-pager td').evaluateAll(cells=>cells.map(cell=>{const rect=cell.getBoundingClientRect();return{left:rect.left,right:rect.right};}));
+          assert(bounds.every(rect=>rect.left>=0&&rect.right<=width+1),'Pager notes must wrap around the original controls');
+          await page.getByRole('combobox',{name:'ページ',exact:true}).selectOption('2');
+          const pending=page.waitForRequest(request=>request.url()===origin+'/fixture/page-post');
+          await page.locator('#report-pager-show').click();
+          const posted=new URLSearchParams((await pending).postData());
+          assert.equal(posted.get('PageNum'),'2');assert.equal(posted.get('fixture_token'),'fictional-page-token');assert.equal(posted.has('previous'),false);
+        }
+        if (/ActionReport$|^actionReport$/.test(kind)) {
+          const tableID=({actionReport:'basic',nestedActionReport:'nested',clonedActionReport:'action-body',frozenActionReport:'plain-body',splitActionReport:'plain-body'})[kind];
+          const table=page.locator('#'+tableID);
+          assert.equal(await table.getAttribute('data-y3client-action-table'),'');
+          assert.equal(await table.getAttribute('role'),null,'A horizontally scrollable TABLE must retain its native table semantics');
+          const intact=()=>page.evaluate(()=>fixtureAction.controls.every((control,index)=>control.form===fixtureAction.owners[index]&&fixtureAction.ancestors[index].every((ancestor,depth)=>{let current=control.parentElement;for(let i=0;i<depth;i++)current=current.parentElement;return ancestor===current;}))&&fixtureAction.forms.every(([form,elements])=>Array.from(form.elements).every((control,index)=>control===elements[index])&&form.elements.length===elements.length));
+          assert.equal(await intact(),true,'Action report layout must retain parser-owned forms and every original ancestor');
+          const edge=await table.evaluate(element=>{element.scrollLeft=element.scrollWidth;return{client:element.clientWidth,scroll:element.scrollWidth,left:element.getBoundingClientRect().left,right:element.getBoundingClientRect().right};});
+          assert(edge.scroll>edge.client&&edge.right<=width+1&&edge.left>=0,'All action columns must remain in bounded horizontal scroll');
+          await page.waitForTimeout(60);
+          assert.equal(await table.evaluate(element=>element.scrollLeft===element.scrollWidth-element.clientWidth),true);
+          if(kind==='nestedActionReport')assert.equal(await page.locator('#outer').getAttribute('data-y3client-result-shell'),'');
+          if(kind==='clonedActionReport'||kind==='frozenActionReport')assert.equal(await page.locator('[data-y3client-action-redundant-header]').count(),1,'A full header already present in the body must not create duplicate overlapping result content');
+          if(kind==='splitActionReport'){
+            const regions=await page.locator('#D_plain_H,#D_plain_B').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return{top:rect.top,bottom:rect.bottom,position:getComputedStyle(node).position};}));
+            assert(regions[0].bottom<=regions[1].top,'A split frozen header must sit above its body without overlap');
+            assert(regions.every(region=>region.position==='relative'));
+          }
+          await page.evaluate(scripts.adapt);
+          assert.equal(await intact(),true);
+          const pending=page.waitForRequest(request=>request.url()===origin+'/fixture/post');
+          await page.locator('#'+tableID+'-button-a').click();
+          assert.deepEqual(new URLSearchParams((await pending).postData()).getAll('fx_repeat'),['fictional-a1','fictional-a2']);
+          assert.equal(await page.evaluate(()=>fixtureClicks),1,'Use the original action button and its handler exactly once');
+        }
         if (kind === 'stock') {
           assert.equal(await page.locator('[data-y3client-result-list]').count(), 1, 'Simple frozen stock results should become a list');
           const cards = page.locator('[data-y3client-result-card]');
@@ -272,6 +427,23 @@ async function main() {
           await page.screenshot({ path: path.join(outputPath, `stock-table-${width}.png`), fullPage: true });
           await page.locator('#D_stock_B').evaluate(element => { element.scrollLeft = 120; });
           await page.waitForFunction(() => document.getElementById('D_stock_H').scrollLeft === document.getElementById('D_stock_B').scrollLeft && document.getElementById('D_stock_B').scrollLeft > 0);
+          await page.locator('#D_stock_H').evaluate(element => { element.scrollLeft = 240; });
+          await page.waitForFunction(() => document.getElementById('D_stock_H').scrollLeft === document.getElementById('D_stock_B').scrollLeft && document.getElementById('D_stock_B').scrollLeft === 240);
+          await page.evaluate(() => {
+            const header=document.getElementById('stock-header'), body=document.getElementById('stock-data');
+            window.fixtureFrozenWidths={ header:header.style.width, body:body.style.width };
+            header.style.setProperty('width','700px','important'); body.style.setProperty('width','900px','important');
+          });
+          await page.locator('#D_stock_B').evaluate(element => { element.scrollLeft=element.scrollWidth; });
+          await page.waitForFunction(() => document.getElementById('D_stock_H').scrollLeft === document.getElementById('D_stock_H').scrollWidth-document.getElementById('D_stock_H').clientWidth);
+          await page.waitForTimeout(80); // Let a reciprocal scroll event run; the clamped header must not limit the wider report.
+          assert.equal(await page.locator('#D_stock_B').evaluate(element=>element.scrollLeft===element.scrollWidth-element.clientWidth),true,'A narrower frozen header must not make the body’s final columns unreachable');
+          await page.locator('#D_stock_H').evaluate(element=>{element.scrollLeft=80;});
+          await page.waitForFunction(()=>document.getElementById('D_stock_B').scrollLeft===80);
+          await page.evaluate(()=>{
+            document.getElementById('stock-header').style.width=fixtureFrozenWidths.header;
+            document.getElementById('stock-data').style.width=fixtureFrozenWidths.body;
+          });
           await toggle.click();
           assert.notEqual(await page.locator('#stock-data tr').first().evaluate(row => getComputedStyle(row).display), 'table-row');
           await page.locator('#page-select').selectOption('2');
@@ -296,6 +468,15 @@ async function main() {
       for (const [kind, pathname] of Object.entries(pages)) {
         await page.goto(origin + pathname);
         await snapshotOriginals(page);
+        if(/ActionReport$|^actionReport$/.test(kind))await page.evaluate(()=>{
+          const controls=Array.from(document.querySelectorAll('input'));
+          window.fixtureAction={controls,owners:controls.map(control=>control.form),ancestors:controls.map(control=>{const ancestors=[];for(let parent=control.parentElement;parent;parent=parent.parentElement)ancestors.push(parent);return ancestors;}),forms:Array.from(document.forms).map(form=>[form,Array.from(form.elements)])};
+        });
+        if(kind==='compoundForm')await page.evaluate(()=>{
+          const form=document.getElementById('fixture-compound-form'),controls=Array.from(form.elements);
+          window.fixtureCompound={form,controls,ancestors:controls.map(control=>{const result=[];for(let ancestor=control.parentElement;ancestor;ancestor=ancestor.parentElement)result.push(ancestor);return result;})};
+          if(form.contains(document.getElementById('fixture-date-start')))throw Error('Fixture must retain non-ancestral parser FORM ownership');
+        });
         // Before = the previous app's touch-size adapter, without the new layout renderer.
         if (width === 390) {
           for (const frame of page.frames()) await frame.evaluate(scripts.before);
@@ -324,9 +505,33 @@ async function main() {
         assert.equal(new URLSearchParams(request.postData()).get('synthetic_session'), 'unchanged');
         await page.waitForFunction(expected => frames[1].document.documentElement?.getAttribute('data-fixture-post') === String(expected), revision);
         await result.evaluate(scripts.adapt);
+        assert.equal(await result.locator('#framed-result-pager select[name="PgSelect"]').count(),1,'A result page may retain its own page-selector form');
         assert.deepEqual(await page.evaluate(scripts.navigationState), { submissionRevision: revision, resultSubmissionRevision: revision }, 'Normal submit and direct native form.submit must each track one ready result without exposing values');
       }
       reports.push({ width, kind: 'framed search', revisions: await page.evaluate(scripts.navigationState) });
+      await page.goto(origin + '/fixture/choice-framed');
+      await adapt();
+      assert.deepEqual(await page.evaluate(scripts.navigationState), { submissionRevision: 0, resultSubmissionRevision: 0 });
+      const choiceCondition = page.frames().find(frame => frame.name() === 'prtz031_1_1');
+      const choiceResult = page.frames().find(frame => frame.name() === 'prtz031_2');
+      for (const [revision, kind] of [[1, 'select'], [2, 'choices'], [3, 'textarea']]) {
+        if (revision > 1) await page.waitForTimeout(220);
+        const pending = page.waitForRequest(request => request.url() === origin + choiceFramedResult && request.method() === 'POST');
+        if (kind === 'select') {
+          await choiceCondition.locator('select[name="shop"]').selectOption('west');
+          await choiceCondition.locator('#framed-selector-submit').click();
+        } else if (kind === 'choices') await choiceCondition.evaluate(() => document.getElementById('framed-choices').submit());
+        else await choiceCondition.evaluate(() => document.getElementById('framed-textarea').requestSubmit());
+        const posted = new URLSearchParams((await pending).postData());
+        assert.equal(posted.get('kind'), kind);
+        if (kind === 'select') assert.equal(posted.get('shop'), 'west');
+        if (kind === 'choices') { assert.equal(posted.get('mode'), 'detail'); assert.equal(posted.get('sales'), '1'); }
+        if (kind === 'textarea') assert.equal(posted.get('query'), '架空商品');
+        await page.waitForFunction(expected => frames[1].document.documentElement?.getAttribute('data-fixture-post') === String(expected), revision);
+        await choiceResult.evaluate(scripts.adapt);
+        assert.deepEqual(await page.evaluate(scripts.navigationState), { submissionRevision: revision, resultSubmissionRevision: revision }, 'Select-only, choice-only and textarea-only searches must each mark exactly one ready result');
+      }
+      reports.push({ width, kind: 'framed select/choices/textarea search', revisions: await page.evaluate(scripts.navigationState) });
       // Emulate WK's document-end injection before window.load, rather than adapting after goto.
       await context.addInitScript(({ before, adapt, pathname }) => {
         if (location.pathname !== pathname) return;

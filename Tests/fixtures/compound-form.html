@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>架空の複合条件フォーム</title>
+<style>
+body { font: 12px serif; margin: 8px; }
+table { border-collapse: collapse; width: 780px; }
+td { white-space: nowrap; padding: 3px; }
+input, select { font: 12px serif; }
+</style>
+<script>
+function fixtureHelper(kind) {
+  window.fixtureHelperCalls = (window.fixtureHelperCalls || []).concat(kind);
+  return false;
+}
+function fixtureSubmit() {
+  window.fixtureSubmitCalls = (window.fixtureSubmitCalls || 0) + 1;
+  document.forms.fixtureSearch.requestSubmit();
+}
+</script>
+</head>
+<body>
+<h2>架空の複合条件照会</h2>
+<!-- Intentionally malformed legacy table/form nesting. The browser keeps the
+     parser-assigned non-ancestral form ownership until an ancestor is moved. -->
+<table id="fixture-compound-table" border="0" cellspacing="0" cellpadding="0">
+<form id="fixture-compound-form" name="fixtureSearch" method="post" action="/fixture/compound-post" target="fixtureResult">
+<tr valign="middle"><td id="fixture-compound-first" nowrap align="left">
+<input type="hidden" name="fixture_token" value="fictional-unchanged">
+<font>架空期間 ：<input id="fixture-date-start" type="text" name="fixtureYYYYMMDD_F" size="10" value="20261001"> ～ <input id="fixture-date-end" type="text" name="fixtureYYYYMMDD_T" size="10" value="20261003"></font>
+架空系列 ：<input id="fixture-brand" type="text" name="fixtureBrand" size="4" value="ZZ"><input id="fixture-brand-help" type="button" name="fixtureBrandHelp" value="系列検索" onclick="return fixtureHelper('brand')"><input type="hidden" name="fixture_brand_state" value="synthetic-brand">
+架空枝番 ：<input id="fixture-sub-1" type="text" name="fixtureSub" size="2" maxlength="2" value="A1"><input id="fixture-sub-2" type="text" name="fixtureSub" size="2" maxlength="2" value="A2"><input id="fixture-sub-3" type="text" name="fixtureSub" size="2" maxlength="2" value="A3"><input id="fixture-sub-4" type="text" name="fixtureSub" size="2" maxlength="2" value="A4"><input id="fixture-sub-5" type="text" name="fixtureSub" size="2" maxlength="2" value="A5"><input id="fixture-sub-help" type="button" name="fixtureSubHelp" value="枝番検索" onclick="return fixtureHelper('sub')"><input type="hidden" name="fixture_sub_state" value="synthetic-sub">
+</td></tr>
+<tr><td id="fixture-compound-second">
+架空年度 ：<input id="fixture-year" type="text" name="fixtureYear" size="4" maxlength="4" value="2026">
+架空季節 ：<select id="fixture-season" name="fixtureSeason" onchange="window.fixtureSeasonChanges=(window.fixtureSeasonChanges||0)+1"><option value="fictional-a">架空季節A</option><option value="fictional-b">架空季節B</option><option value="fictional-disabled" disabled>架空停止季節</option></select>
+架空分類 ：<input id="fixture-code-1" type="text" name="fixtureCode" size="2" maxlength="2" value="Q1"><input id="fixture-code-2" type="text" name="fixtureCode" size="2" maxlength="2" value="Q2"><input id="fixture-code-3" type="text" name="fixtureCode" size="2" maxlength="2" value="Q3"><input id="fixture-code-4" type="text" name="fixtureCode" size="2" maxlength="2" value="Q4"><input id="fixture-code-5" type="text" name="fixtureCode" size="2" maxlength="2" value="Q5"><input id="fixture-code-help" type="button" name="fixtureCodeHelp" value="分類検索" onclick="return fixtureHelper('code')"><input type="hidden" name="fixture_code_state" value="synthetic-code">
+<input id="fixture-search" type="button" name="fixtureSearchButton" value="検索" onclick="fixtureSubmit()"><input id="fixture-reset" type="reset" name="fixtureReset" value="リセット">
+</td></tr>
+</form>
+</table>
+<div id="ui-datepicker-div" style="position:absolute;display:none">
+<table class="ui-datepicker-calendar"><thead><tr><th>日</th><th>月</th><th>火</th><th>水</th><th>木</th><th>金</th><th>土</th></tr></thead><tbody><tr><td><a href="#">1</a></td><td><a href="#">2</a></td><td><a href="#">3</a></td><td><a href="#">4</a></td><td><a href="#">5</a></td><td><a href="#">6</a></td><td><a href="#">7</a></td></tr></tbody></table>
+</div>
+<iframe name="fixtureResult" src="about:blank" hidden></iframe>
+</body>
+</html>

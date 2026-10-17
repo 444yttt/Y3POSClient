@@ -52,7 +52,7 @@ enum LegacySiteSupport {
     (() => {
       const origin = 'https://adidas-y3.poscmcloud.jp:15505';
       const exportDocument = location.origin === 'https://adidas-y3.poscmcloud.jp:7705' &&
-        location.pathname === '/dataspider/trigger/hanbai.asp';
+        /^\/dataspider\/trigger\/(?:hanbai|move|sku_stok|hanbai_ruikei)\.asp$/i.test(location.pathname);
       if ((location.origin !== origin && !exportDocument) || !document.documentElement) return;
       // Metadata and inventory roles are structural: the site has multiple report URL families.
       const reportTables = doc => Array.from(doc.querySelectorAll('table')).filter(table =>
@@ -161,7 +161,7 @@ enum LegacySiteSupport {
           if (!clonedResult) table.setAttribute('data-y3client-search-table', '');
         }
       }
-      if (exportDocument) {
+      if (exportDocument || /^\/scripts\/verona\/display\/dstz(?:710|730)_3_2\.asp$/i.test(location.pathname)) {
         root.setAttribute('data-y3client-export', '');
         for (const anchor of document.querySelectorAll('a[href]')) {
           const url = new URL(anchor.href, location.href);
@@ -273,6 +273,8 @@ enum LegacySiteSupport {
           [data-y3client-form-shell] > tbody, [data-y3client-form-shell] > tbody > tr, [data-y3client-form-shell] > tbody > tr > td { display:block!important; width:auto!important; max-width:100%; border:0!important; background:transparent!important; white-space:normal!important; box-sizing:border-box; }
           [data-y3client-form-table] { display:block!important; width:100%!important; max-width:100%; margin:12px 0 18px!important; padding:18px!important; border:1px solid #e1e5e8!important; border-radius:16px; background:#fff!important; box-sizing:border-box; }
           [data-y3client-form-table] > tbody { display:block!important; }
+          [data-y3client-form-table] > tbody > tr:not([data-y3client-form-row]):not([data-y3client-action-row]) { display:block!important; width:100%!important; }
+          [data-y3client-form-table] > tbody > tr:not([data-y3client-form-row]):not([data-y3client-action-row]) > td { display:block!important; width:auto!important; max-width:100%; min-width:0; white-space:normal!important; overflow-wrap:anywhere; box-sizing:border-box; }
           [data-y3client-form-row] { display:grid!important; grid-template-columns:minmax(0,1fr); gap:7px; width:100%!important; margin:0 0 18px; box-sizing:border-box; }
           [data-y3client-form-row] > td, [data-y3client-action-row] > td { display:block!important; width:auto!important; max-width:100%; border:0!important; padding:0!important; background:transparent!important; white-space:normal!important; box-sizing:border-box; }
           [data-y3client-label-cell] { color:#515b64; text-align:left!important; font:600 12px/1.5 -apple-system,BlinkMacSystemFont,sans-serif!important; }
@@ -280,7 +282,14 @@ enum LegacySiteSupport {
           [data-y3client-form-row] > td[data-y3client-field-cell], [data-y3client-field-cell] { display:flex!important; flex-wrap:wrap; align-items:center; gap:8px; color:#64707b; }
           [data-y3client-field]:not([type='checkbox' i]):not([type='radio' i]) { display:block; width:100%!important; max-width:100%; min-width:0!important; min-height:48px!important; margin:0; padding:11px 12px!important; border:1px solid #dce1e5!important; border-radius:10px; background:#fff!important; color:#111; font:400 16px/1.4 -apple-system,BlinkMacSystemFont,sans-serif!important; box-sizing:border-box; }
           [data-y3client-field]:focus { outline:2px solid #111; outline-offset:1px; }
-          [data-y3client-form-row] > td[data-y3client-date-pair], [data-y3client-date-pair] { display:grid!important; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); align-items:center; gap:6px; }
+          html[data-y3client-layout] [data-y3client-form-row] > td[data-y3client-compound-cell], html[data-y3client-layout] [data-y3client-field-cell][data-y3client-compound-cell] { display:grid!important; grid-template-columns:repeat(10,minmax(0,1fr)); gap:8px 6px!important; align-items:center; }
+          [data-y3client-compound-cell] [data-y3client-inline-shell] { display:contents!important; }
+          [data-y3client-original-label], [data-y3client-legacy-spacer] { display:none!important; }
+          [data-y3client-compound-label] { grid-column:1/-1; margin:10px 0 0; color:#515b64; font:600 12px/1.5 -apple-system,BlinkMacSystemFont,sans-serif; }
+          [data-y3client-compound-control] { grid-row:var(--y3client-grid-row); grid-column:var(--y3client-grid-column); min-width:0!important; max-width:100%!important; }
+          [data-y3client-compound-cell] input[data-y3client-field] { width:100%!important; min-width:0!important; padding-inline:6px!important; }
+          [data-y3client-compound-cell] input[data-y3client-code-field] { text-align:center; }
+          html[data-y3client-layout] [data-y3client-form-row] > td[data-y3client-date-pair], html[data-y3client-layout] [data-y3client-date-pair] { display:grid!important; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); align-items:center; gap:6px; }
           [data-y3client-date-pair] > [data-y3client-field] { padding-inline:8px!important; text-align:center; font-variant-numeric:tabular-nums; }
           input[data-y3client-field][type='checkbox' i], input[data-y3client-field][type='radio' i] { width:21px!important; height:21px!important; min-width:21px!important; min-height:21px!important; margin:0 0 0 2px; padding:0!important; accent-color:#111; flex-shrink:0; }
           [data-y3client-choice-label] { display:inline-flex!important; align-items:center; min-height:44px; margin:0 8px 0 -4px; padding:8px 6px; font:400 14px/1.4 -apple-system,BlinkMacSystemFont,sans-serif; color:#111; box-sizing:border-box; }
@@ -397,13 +406,79 @@ enum LegacySiteSupport {
         do { candidate = prefix + (++generatedID); } while (document.getElementById(candidate));
         return candidate;
       };
+      // Old reports put several labeled groups inside a single cell. Style the original
+      // nodes in place: reparenting these parser-associated inputs would reset FORM ownership.
+      const adaptCompoundCell = cell => {
+        if (cell.hasAttribute('data-y3client-compound-cell') || cell.querySelector('table')) return;
+        const fields = Array.from(cell.querySelectorAll('input,select,textarea')).filter(control => control.type !== 'hidden');
+        if(fields.some(control=>/^(checkbox|radio)$/.test(control.type)))return;
+        const entries = fields.filter(control => control.tagName !== 'INPUT' || !/^(button|submit|reset|checkbox|radio)$/.test(control.type));
+        const externalLabel=Array.from(cell.parentElement.cells).find(candidate=>candidate!==cell&&!candidate.querySelector('input,select,textarea,button,table')&&text(candidate));
+        if (entries.length < 2 || (cell.parentElement.cells.length !== 1&&!externalLabel)) return;
+        const walker = document.createTreeWalker(cell, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+        const preceding = new Map(), textNodes = [];
+        let pending = '', node;
+        while ((node = walker.nextNode())) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            if (node.parentElement.closest('select,textarea,button,script,style,label')) continue;
+            pending += node.textContent;
+            textNodes.push(node);
+          } else if (fields.includes(node)) { preceding.set(node,pending); pending=''; }
+        }
+        const labelFrom = value => value.normalize('NFKC').replace(/\s+/g,' ').trim().match(/([^:：〜～]{1,40})[:：]\s*$/)?.[1].trim() || '';
+        const date = control => /YYYYMMDD/i.test(control.name || '') || control.type === 'date';
+        const groups = [];
+        for (const control of fields) {
+          const label = labelFrom(preceding.get(control) || '');
+          const previous = groups[groups.length-1];
+          const button = control.tagName === 'INPUT' && /^(button|submit|reset)$/.test(control.type);
+          const joined = previous && !label && ((!button && previous.entries.length &&
+            ((date(control) && previous.entries.every(date) && previous.entries.length < 2) ||
+             (control.name && previous.entries.every(entry=>entry.name===control.name)))) ||
+            (button && control.type === 'button' && /(?:item|brand|hinban).*kensaku/i.test(control.name || '')));
+          if (joined) { previous.controls.push(control); if(!button)previous.entries.push(control); }
+          else groups.push({label,controls:[control],entries:button?[]:[control]});
+        }
+        if(externalLabel&&groups.length&&!groups[0].label){groups[0].label=text(externalLabel).normalize('NFKC').replace(/\s*[:：]\s*$/,'').trim();groups[0].externalLabel=true;}
+        if (groups.filter(group=>group.label).length < 2) return;
+        cell.setAttribute('data-y3client-compound-cell','');
+        for (const original of textNodes) if (original.textContent.trim()) {
+          const hidden=document.createElement('span');hidden.setAttribute('data-y3client-original-label','');
+          original.replaceWith(hidden);hidden.appendChild(original);
+        }
+        for (const element of Array.from(cell.children)) if (!element.matches('input,select,textarea,button,[data-y3client-original-label]') && !element.querySelector('input,select,textarea,button') && !text(element)) element.setAttribute('data-y3client-legacy-spacer','');
+        let gridRow=1;
+        const position=(control,column,row)=>{
+          control.setAttribute('data-y3client-compound-control','');
+          control.style.setProperty('--y3client-grid-row',String(row));control.style.setProperty('--y3client-grid-column',column);
+          for(let parent=control.parentElement;parent&&parent!==cell;parent=parent.parentElement)parent.setAttribute('data-y3client-inline-shell','');
+        };
+        for (const group of groups) {
+          if(group.label&&!group.externalLabel){const label=document.createElement('span');label.setAttribute('data-y3client-compound-label','');label.textContent=group.label;label.style.gridRow=String(gridRow++);cell.appendChild(label);}
+          const pair=group.entries.length===2&&group.entries.every(date);
+          const codes=group.entries.length>1&&group.entries.length<=5&&group.entries.every(entry=>entry.tagName==='INPUT'&&entry.maxLength>0&&entry.maxLength<=4);
+          for(let index=0;index<group.entries.length;index++){
+            const control=group.entries[index];
+            position(control,pair?(index===0?'1 / 6':'6 / 11'):codes?(String(index*2+1)+' / '+String(index*2+3)):'1 / -1',gridRow);
+            if(codes)control.setAttribute('data-y3client-code-field','');
+            if(!control.hasAttribute('aria-label')&&!control.hasAttribute('aria-labelledby')&&!control.labels?.length&&group.label)control.setAttribute('aria-label',group.label+(pair?(index===0?' 開始日':' 終了日'):codes?' '+(index+1):''));
+            if(!pair&&!codes)gridRow++;
+          }
+          if(pair||codes)gridRow++;
+          for(const control of group.controls.filter(control=>!group.entries.includes(control))){position(control,'1 / -1',gridRow++);if(group.label){control.setAttribute('data-y3client-lookup-button','');if(!control.hasAttribute('aria-label'))control.setAttribute('aria-label',group.label+'を検索');}}
+        }
+      };
       for (const form of Array.from(document.forms)) {
-        const controls = Array.from(form.elements).filter(control => /^(INPUT|SELECT|TEXTAREA)$/.test(control.tagName) && control.type !== 'hidden' && !frozen(control));
+        const owned = Array.from(form.elements);
+        const legacyTable = searchPage && form.closest('table');
+        if (legacyTable && legacyTable.querySelectorAll('form').length === 1) for(const control of legacyTable.querySelectorAll('input,select,textarea')) if(!control.form&&!owned.includes(control))owned.push(control);
+        const controls = owned.filter(control => /^(INPUT|SELECT|TEXTAREA)$/.test(control.tagName) && control.type !== 'hidden' && !frozen(control));
         const passwordForm = controls.some(control => control.type === 'password');
-        const entryControls = controls.filter(control => control.tagName === 'TEXTAREA' || (control.tagName === 'INPUT' && /^(text|search|date|password|email|number|tel)$/.test(control.type)));
+        const entryControls = controls.filter(control => /^(SELECT|TEXTAREA)$/.test(control.tagName) || (control.tagName === 'INPUT' && /^(text|search|date|password|email|number|tel|checkbox|radio)$/.test(control.type)));
         if (!passwordForm && (!searchPage || !entryControls.length)) continue;
         if (passwordForm) root.setAttribute('data-y3client-login', '');
         form.setAttribute('data-y3client-mobile-form', passwordForm ? 'login' : 'search');
+        for(const cell of new Set(controls.map(control=>control.closest('td,th')).filter(Boolean)))adaptCompoundCell(cell);
         const tables = new Set();
         for (const control of controls) {
           const table = control.closest('table');
@@ -413,7 +488,7 @@ enum LegacySiteSupport {
           tables.add(table);
           const button = control.tagName === 'INPUT' && /^(submit|reset|button)$/.test(control.type);
           if (button) {
-            const primary = control.type === 'submit' || (control.type === 'button' && /^(検索|検索開始|検索実行|ログイン|表示|実行)$/.test(control.value.trim()));
+            const primary = control.type === 'submit' || (control.type === 'button' && !control.hasAttribute('data-y3client-lookup-button') && /^(検索|検索開始|検索実行|ログイン|表示|実行|送信)$/.test(control.value.trim()));
             control.setAttribute(primary ? 'data-y3client-primary' : 'data-y3client-secondary', '');
             const row = control.closest('tr');
             if (row && !row.querySelector('input:not([type="hidden" i]):not([type="submit" i]):not([type="reset" i]):not([type="button" i]),select,textarea')) row.setAttribute('data-y3client-action-row', '');
@@ -431,7 +506,7 @@ enum LegacySiteSupport {
             const datePair = dates.length === 2 && cell.children.length === 2;
             if (labelCell) {
               labelCell.setAttribute('data-y3client-label-cell', '');
-              if (!control.hasAttribute('aria-label') && !control.hasAttribute('aria-labelledby') && !(control.labels && control.labels.length)) {
+              if (!/^(checkbox|radio)$/.test(control.type) && !control.hasAttribute('aria-label') && !control.hasAttribute('aria-labelledby') && !(control.labels && control.labels.length)) {
                 if (datePair && dates.includes(control)) {
                   control.setAttribute('aria-label', text(labelCell) + (dates.indexOf(control) === 0 ? ' 開始日' : ' 終了日'));
                 } else {
@@ -456,6 +531,14 @@ enum LegacySiteSupport {
                 following.replaceWith(label);
               }
             }
+            // An option label names a choice; the row heading is only a fallback when none exists.
+            if (!control.labels?.length && !control.hasAttribute('aria-label') && !control.hasAttribute('aria-labelledby')) {
+              const fallback = row && Array.from(row.cells).find(candidate => candidate.hasAttribute('data-y3client-label-cell'));
+              if (fallback) {
+                if (!fallback.id) fallback.id = uniqueID('y3client-field-label-');
+                control.setAttribute('aria-labelledby', fallback.id);
+              }
+            }
           }
         }
         for (const table of tables) {
@@ -473,9 +556,40 @@ enum LegacySiteSupport {
       const root = document.documentElement;
       const reportPage = /\/scripts\/verona\/(?:print|display|dwh)\/(?:prtz|dstz|help_)/i.test(location.pathname);
       if (!reportPage) return;
-      if (window.__y3ClientIsInventoryMetadata?.()) return;
+      const inventoryMetadata=!!window.__y3ClientIsInventoryMetadata?.();
       // Legacy Tscroller builds the paired header/body tables in its load handler.
       if (document.readyState !== 'complete') { window.addEventListener('load', adaptResults, { once:true }); return; }
+      // Summaries and pagers also occur in inventory metadata documents, where generic
+      // record-card conversion must stay disabled. Their original cells/forms stay in place.
+      if(!document.getElementById('y3client-report-controls-style')){
+        const style=document.createElement('style');style.id='y3client-report-controls-style';style.textContent=`
+          table[data-y3client-report-summary], table[data-y3client-report-summary] > tbody { display:block!important; width:100%!important; max-width:100%!important; box-sizing:border-box; }
+          [data-y3client-report-summary] > tbody > tr { display:grid!important; grid-template-columns:minmax(0,1fr) minmax(0,2fr); width:100%; }
+          [data-y3client-report-summary] > tbody > tr > td { display:block!important; width:auto!important; min-width:0!important; white-space:normal!important; overflow-wrap:anywhere; padding:6px 8px; }
+          [data-y3client-report-summary] .selecttitle { font-weight:600; color:#65707a; background:#eef0f2; }
+          html[data-y3client-layout] [data-y3client-pager-table], html[data-y3client-layout] [data-y3client-pager-table] > tbody { display:block!important; width:100%!important; max-width:100%!important; box-sizing:border-box; }
+          html[data-y3client-layout] [data-y3client-pager-table] > tbody > tr { display:flex!important; flex-wrap:wrap; gap:8px; width:100%!important; margin:0; }
+          html[data-y3client-layout] [data-y3client-pager-table] > tbody > tr > td { display:block!important; width:auto!important; max-width:100%!important; min-width:0!important; padding:0!important; white-space:normal!important; overflow-wrap:anywhere; flex:0 1 auto; }
+          html[data-y3client-layout] [data-y3client-pager-table] > tbody > tr > td[data-y3client-pager-note] { flex-basis:100%; margin:2px 0 8px; font-size:12px!important; color:#737b82; }
+          [data-y3client-page-selector] { min-width:64px!important; min-height:44px!important; padding:8px 10px!important; border:1px solid #dce1e5; border-radius:8px; background:#fff; font-size:16px!important; }
+        `;document.head.appendChild(style);
+      }
+      const visibleControls = element => Array.from(element.querySelectorAll('input,select,textarea,button')).some(control => control.type !== 'hidden');
+      for(const table of Array.from(document.querySelectorAll('table'))){
+        if(table.rows.length<1||table.rows.length>10||table.querySelector('table')||visibleControls(table)||!table.querySelector('td.selecttitle'))continue;
+        if(Array.from(table.rows).every(row=>row.cells.length>=2&&row.cells.length%2===0&&Array.from(row.cells).every((cell,index)=>index%2||cell.classList.contains('selecttitle'))))table.setAttribute('data-y3client-report-summary','');
+      }
+      for (const select of document.querySelectorAll('select[name="PgSelect" i],select[name*="page" i],select[name*="pageno" i]')) {
+        select.setAttribute('data-y3client-page-selector','');
+        const generatedName=!select.hasAttribute('aria-labelledby')||(select.getAttribute('aria-labelledby')||'').split(/\s+/).every(id=>/^y3client-field-label-/.test(id));
+        if (!select.hasAttribute('aria-label') && !select.labels?.length && generatedName) {select.removeAttribute('aria-labelledby');select.setAttribute('aria-label','ページ');}
+        const pager=select.closest('table');
+        if(pager&&!pager.querySelector('table')&&pager.rows.length<=3&&!/^D_.*_[HB]$/i.test(pager.parentElement?.id||'')){
+          pager.setAttribute('data-y3client-pager-table','');
+          for(const cell of pager.querySelectorAll('td'))if(!cell.querySelector('input,select,textarea,button')&&cell.textContent.trim())cell.setAttribute('data-y3client-pager-note','');
+        }
+      }
+      if(inventoryMetadata)return;
       root.setAttribute('data-y3client-redesign', '');
       if (!document.getElementById('y3client-results-style')) {
         const style = document.createElement('style'); style.id = 'y3client-results-style';
@@ -493,8 +607,13 @@ enum LegacySiteSupport {
           [data-y3client-table-scroll] > table:not([data-y3client-result-list='cards']) td,
           [data-y3client-table-scroll] > table:not([data-y3client-result-list='cards']) th { padding:10px 12px; border:1px solid #e3e5e8; }
           [data-y3client-table-scroll] > table:not([data-y3client-result-list='cards']) th { background:#f0f1f3; font-weight:600; }
+          table[data-y3client-action-table] { display:block!important; width:100%!important; max-width:100%!important; box-sizing:border-box; overflow-x:auto!important; -webkit-overflow-scrolling:touch; }
+          [data-y3client-action-container] { position:relative!important; left:0!important; top:0!important; width:100%!important; max-width:100%!important; height:auto!important; max-height:none!important; box-sizing:border-box; }
+          [data-y3client-action-container][data-y3client-action-header] { height:var(--y3client-action-header-height)!important; overflow-y:hidden!important; }
+          [data-y3client-action-redundant-header] { display:none!important; }
+          [data-y3client-action-container] > table[data-y3client-action-table] { position:static!important; left:auto!important; top:auto!important; }
+          [data-y3client-result-shell], [data-y3client-result-shell] > tbody, [data-y3client-result-shell] > tbody > tr, [data-y3client-result-shell] > tbody > tr > td { display:block!important; width:100%!important; max-width:100%!important; min-width:0!important; float:none!important; box-sizing:border-box; }
           table[data-y3client-natural-columns] { width:max-content!important; min-width:100%; table-layout:auto!important; }
-          [data-y3client-page-selector] { min-width:64px!important; min-height:44px!important; padding:8px 10px!important; border:1px solid #dce1e5; border-radius:8px; background:#fff; font-size:16px!important; }
           [data-y3client-frozen-body],[data-y3client-frozen-header] { position:relative!important; left:0!important; top:0!important; height:auto!important; max-height:none!important; margin:0!important; }
           [data-y3client-frozen-header][data-y3client-hidden-header] { display:none!important; }
           table[data-y3client-result-list='cards'] { display:block!important; border:0!important; width:100%!important; min-width:0!important; max-width:100%!important; background:transparent!important; border-spacing:0; }
@@ -512,10 +631,29 @@ enum LegacySiteSupport {
         `;
         document.head.appendChild(style);
       }
-      const visibleControls = element => Array.from(element.querySelectorAll('input,select,textarea,button')).some(control => control.type !== 'hidden');
-      for (const select of document.querySelectorAll('select[name="PgSelect" i],select[name*="page" i],select[name*="pageno" i]')) {
-        select.setAttribute('data-y3client-page-selector','');
-        if (!select.hasAttribute('aria-label') && !select.hasAttribute('aria-labelledby') && !select.labels?.length) select.setAttribute('aria-label','ページ');
+      // Report drill-down buttons use parser-owned legacy forms. Bound the existing
+      // TABLE itself rather than moving it into a wrapper and losing those associations.
+      for(const table of Array.from(document.querySelectorAll('table'))){
+        if(table.rows.length<2||table.querySelector('table')||table.closest('[data-y3client-form-table],[data-y3client-search-table],#ui-datepicker-div,.ui-datepicker,[role="dialog"],[role="grid"],[data-y3client-table-scroll]'))continue;
+        const controls=Array.from(table.querySelectorAll('input,select,textarea,button')).filter(control=>control.type!=='hidden');
+        if(!controls.length||!controls.every(control=>control.tagName==='BUTTON'||(control.tagName==='INPUT'&&/^(button|submit|reset)$/.test(control.type))))continue;
+        table.setAttribute('data-y3client-action-table','');table.setAttribute('data-y3client-table-scroll','');table.tabIndex=0;if(!table.hasAttribute('aria-label'))table.setAttribute('aria-label','操作付き検索結果の表');
+        const parent=table.parentElement;
+        if(parent&&/^D_.*_[HB]$/i.test(parent.id)){
+          if(/_H$/i.test(parent.id)){parent.style.setProperty('--y3client-action-header-height',Math.max(1,parent.getBoundingClientRect().height)+'px');parent.setAttribute('data-y3client-action-header','');}
+          parent.setAttribute('data-y3client-action-container','');
+        }
+        if(parent&&/^D_.*_B$/i.test(parent.id)){
+          const header=document.getElementById(parent.id.replace(/_B$/i,'_H'));
+          if(header){
+            if(!header.hasAttribute('data-y3client-action-container'))header.style.setProperty('--y3client-action-header-height',Math.max(1,header.getBoundingClientRect().height)+'px');
+            header.setAttribute('data-y3client-action-header','');header.setAttribute('data-y3client-action-container','');
+            const headerTable=header.querySelector('table'),signature=row=>row&&JSON.stringify(Array.from(row.cells).map(cell=>[(cell.textContent||'').replace(/\s+/g,' ').trim(),cell.colSpan,cell.rowSpan]));
+            if(headerTable&&signature(headerTable.rows[0])===signature(table.rows[0]))header.setAttribute('data-y3client-action-redundant-header','');
+            table.addEventListener('scroll',()=>{const target=header.querySelector('table[data-y3client-action-table]')||header;target.scrollLeft=table.scrollLeft;},{passive:true});
+          }
+        }
+        if(!parent||!/^D_.*_H$/i.test(parent.id)){const hint=document.createElement('p');hint.setAttribute('data-y3client-result-hint','');hint.textContent='表は左右にスクロールできます';table.parentElement.insertBefore(hint,table);}
       }
       const headerText = cell => {
         const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
@@ -525,7 +663,7 @@ enum LegacySiteSupport {
         }
         return text.replace(/\s+/g,' ').trim().slice(0,60);
       };
-      const isData = table => table.rows.length >= 2 && !table.closest('[data-y3client-search-table],[data-y3client-menu-table],[data-y3client-inventory],[data-y3client-inventory-view]') && !visibleControls(table) && !table.querySelector('table');
+      const isData = table => !inventoryMetadata && table.rows.length >= 2 && !table.closest('[data-y3client-search-table],[data-y3client-form-table],[data-y3client-menu-table],[data-y3client-inventory],[data-y3client-inventory-view],[data-y3client-report-summary],#ui-datepicker-div,.ui-datepicker,.ui-datepicker-calendar,[role="dialog"],[role="grid"]') && !visibleControls(table) && !table.querySelector('table');
       for (const table of Array.from(document.querySelectorAll('table'))) {
         if (!isData(table) || table.hasAttribute('data-y3client-result-list') || table.closest('[data-y3client-table-scroll]')) continue;
         const container=table.parentElement;
@@ -546,7 +684,20 @@ enum LegacySiteSupport {
           if (headerContainer) {
             headerContainer.setAttribute('data-y3client-frozen-header','');
             headerContainer.setAttribute('data-y3client-table-scroll','');
-            container.addEventListener('scroll',()=>{headerContainer.scrollLeft=container.scrollLeft;},{passive:true});
+            const syncedOffsets = new WeakMap();
+            const alignScroll = (source, target) => {
+              const expected = syncedOffsets.get(source);
+              syncedOffsets.delete(source);
+              if (expected === source.scrollLeft) return;
+              if (target.scrollLeft !== source.scrollLeft) {
+                const before = target.scrollLeft;
+                target.scrollLeft = source.scrollLeft;
+                // A narrower peer may clamp. Its synthetic scroll must not pull this source back.
+                if (target.scrollLeft !== before) syncedOffsets.set(target, target.scrollLeft);
+              }
+            };
+            container.addEventListener('scroll',()=>alignScroll(container,headerContainer),{passive:true});
+            headerContainer.addEventListener('scroll',()=>alignScroll(headerContainer,container),{passive:true});
           }
         } else {
           scroll=document.createElement('div');
@@ -588,6 +739,10 @@ enum LegacySiteSupport {
         };
         toggle.addEventListener('click',()=>{cards=!cards;show();}); show();
       }
+      for(const table of Array.from(document.querySelectorAll('table'))){
+        const ownRows=Array.from(table.rows).filter(row=>row.closest('table')===table);
+        if(!table.hasAttribute('data-y3client-table-scroll')&&ownRows.length<=3&&table.querySelector('[data-y3client-table-scroll]'))table.setAttribute('data-y3client-result-shell','');
+      }
     })();
 
     (() => {
@@ -598,7 +753,8 @@ enum LegacySiteSupport {
       const state=host.__y3ClientNavigation || (host.__y3ClientNavigation={submissionRevision:0,resultSubmissionRevision:0});
       const path=location.pathname;
       const readOnlyPage=/\/scripts\/verona\/(?:print|display|dwh)\/(?:prtz|dstz)/i.test(path);
-      const searchForms=readOnlyPage?Array.from(document.forms).filter(form=>!form.querySelector('input[type=password]') && Array.from(form.elements).some(input=>input.tagName==='INPUT' && ['text','search','date'].includes(input.type))):[];
+      const searchForms=readOnlyPage?Array.from(document.forms).filter(form=>!form.querySelector('input[type=password]') && Array.from(form.elements).some(input=>/^(SELECT|TEXTAREA)$/.test(input.tagName) || (input.tagName==='INPUT' && ['text','search','date','checkbox','radio'].includes(input.type)))):[];
+      const conditionForms=searchForms.filter(form=>Array.from(form.elements).some(input=>input.tagName==='TEXTAREA'||(input.tagName==='SELECT'&&!/^(PgSelect|Page(?:No|Num)?|PageSelect)$/i.test(input.name||''))||(input.tagName==='INPUT'&&['text','search','date','checkbox','radio'].includes(input.type))));
       for(const form of searchForms)form.setAttribute('data-y3-form','');
       const mark=form=>{
         if(!form?.hasAttribute('data-y3-form'))return;
@@ -613,7 +769,7 @@ enum LegacySiteSupport {
         const original=HTMLFormElement.prototype.submit;
         HTMLFormElement.prototype.submit=function(...args){mark(this);return original.apply(this,args);};
       }
-      if(window!==host && readOnlyPage && !window.__y3ClientIsInventoryMetadata?.() && !window.__y3ClientHasInventoryMetrics?.() && !searchForms.length && (document.querySelector('table') || /\/prtz\d+_(?:[2-9]|[2-9]_[2-9])\.asp$/i.test(path))) {
+      if(window!==host && readOnlyPage && !window.__y3ClientIsInventoryMetadata?.() && !window.__y3ClientHasInventoryMetrics?.() && !conditionForms.length && (document.querySelector('table') || /\/prtz\d+_(?:[2-9]|[2-9]_[2-9])\.asp$/i.test(path))) {
         const ready=()=>{state.resultSubmissionRevision=state.submissionRevision || 0;};
         if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',ready,{once:true});else ready();
       }
@@ -964,6 +1120,15 @@ enum LegacySiteSupport {
         const document = container.ownerDocument;
         if (document.location.origin !== ORIGIN) return false;
         addStyles(document);
+        // Only restore focus owned by this result; a background refresh must not steal it.
+        const active = document.activeElement;
+        const ownedFocus = active && container.contains(active);
+        const focusedUnit = ownedFocus ? active.getAttribute('data-y3client-size-unit') : null;
+        const focusedFilter = ownedFocus && active.hasAttribute('data-y3client-inventory-stock-filter');
+        const focusedTableButton = ownedFocus && active.hasAttribute('data-y3client-inventory-table-button');
+        const focusedDetail = ownedFocus && active.tagName === 'SUMMARY' ? active.closest('[data-y3client-color-code]') : null;
+        const focusedColor = focusedDetail?.getAttribute('data-y3client-color-code');
+        const focusedTotal = focusedDetail?.hasAttribute('data-y3client-inventory-overall-total');
         const state = containerState.get(container) || { unit: 'JP', onlyStock: false, openColors: new Set() };
         containerState.set(container, state);
         const metadata = {};
@@ -1091,6 +1256,14 @@ enum LegacySiteSupport {
           section.appendChild(card);
         }
         container.replaceChildren(section);
+        if (ownedFocus) {
+          let replacement = null;
+          if (focusedUnit) replacement = Array.from(section.querySelectorAll('[data-y3client-size-unit]')).find(button => button.getAttribute('data-y3client-size-unit') === focusedUnit);
+          else if (focusedFilter) replacement = section.querySelector('[data-y3client-inventory-stock-filter]');
+          else if (focusedTableButton) replacement = section.querySelector('[data-y3client-inventory-table-button]');
+          else if (focusedColor !== undefined) replacement = Array.from(section.querySelectorAll('[data-y3client-color-code]')).find(card => card.getAttribute('data-y3client-color-code') === focusedColor && card.hasAttribute('data-y3client-inventory-overall-total') === focusedTotal)?.querySelector('summary');
+          replacement?.focus({ preventScroll: true });
+        }
         return true;
       }
 
@@ -1425,6 +1598,9 @@ enum LegacySiteSupport {
       try {host=window.top;if(!trusted(host)||!rootPath.test(host.location.pathname)||!host.document.querySelector('frameset'))return;}catch(_){return;}
       if(host.__y3ClientInventoryMerge){host.__y3ClientInventoryMerge.reconcile();return;}
       const state={primary:null,secondary:null,view:null,mount:null,signature:'',mode:'cards',merged:false,raw:null,sourceTable:null,readySubmission:0};
+      // Keep the last accepted source across invalidation. SKU equality alone cannot
+      // distinguish a new same-product search from its old, still-complete data frame.
+      let lastReadySource=null;
       const listening=new WeakSet();
       const clean=value=>String(value??'').replace(/\s+/g,' ').trim();
       const keyText=value=>clean(value).normalize('NFKC').replace(/[\s:：]/g,'');
@@ -1486,13 +1662,15 @@ enum LegacySiteSupport {
         const originalControls=Array.from(frame.doc.querySelectorAll('input,textarea')).filter(control=>!control.closest(generated));
         if(originalControls.some(control=>control.tagName==='TEXTAREA'||['text','search','date','password'].includes(control.type)))return null;
         const summary={productCode:'',productName:'',updatedAt:'',categoryLabel:'',categoryCode:''};
+        const summaryTables=[];
         for(const table of tables){
           const fields=api.parseInventorySummary(table);
+          if(fields.productCode||fields.updatedAt)summaryTables.push(table);
           for(const key of Object.keys(summary))if(!summary[key]&&fields[key])summary[key]=fields[key];
         }
         if(!clean(summary.productCode)||!clean(summary.updatedAt))return null;
         const pager=Array.from(frame.doc.querySelectorAll('select[name="PgSelect"]')).find(control=>!control.closest(generated));
-        return {matrix:null,metadata:{frame,summary,hasPager:!!pager}};
+        return {matrix:null,metadata:{frame,summary,sourceTables:summaryTables,hasPager:!!pager}};
       };
       const inventoryPair=frames=>{
         const family=rootPath.exec(host.location.pathname)?.[1].toLowerCase();
@@ -1508,7 +1686,7 @@ enum LegacySiteSupport {
             clean(primary.summary.productCode)===clean(secondary.matrix.product.productCode));
           const paged=matching.filter(primary=>primary.hasPager);
           const preferred=paged.length?paged:matching;
-          for(const primary of preferred)pairs.push({primary:primary.frame,secondary:secondary.frame,summary:primary.summary,matrix:secondary.matrix,sourceTable:secondary.sourceTable});
+          for(const primary of preferred)pairs.push({primary:primary.frame,secondary:secondary.frame,summary:primary.summary,summaryTables:primary.sourceTables,matrix:secondary.matrix,sourceTable:secondary.sourceTable});
         }
         return pairs.length===1?pairs[0]:null;
       };
@@ -1534,14 +1712,16 @@ enum LegacySiteSupport {
       };
       const showTable=()=>{
         if(!state.merged||!state.raw||!state.mount)return;
+        const transfer=state.mount.contains(state.primary.activeElement);
         state.mode='table';state.mount.hidden=true;state.raw.hidden=false;
+        if(transfer)state.raw.querySelector('[data-y3client-inventory-back]')?.focus({preventScroll:true});
       };
       const createRawView=(doc,source,summary)=>{
         const panel=doc.createElement('section');panel.setAttribute('data-y3client-inventory-raw','');
         const title=doc.createElement('h1');title.textContent=summary.productCode;panel.appendChild(title);
         const caption=doc.createElement('p');caption.textContent=[summary.productName,summary.updatedAt].filter(Boolean).join(' · ');panel.appendChild(caption);
         const back=doc.createElement('button');back.type='button';back.setAttribute('data-y3client-inventory-back','');back.textContent='サイズ別一覧に戻る';
-        back.addEventListener('click',()=>{state.mode='cards';panel.hidden=true;state.mount.hidden=false;});panel.appendChild(back);
+        back.addEventListener('click',()=>{const transfer=panel.contains(doc.activeElement);state.mode='cards';panel.hidden=true;state.mount.hidden=false;if(transfer)state.mount.querySelector('[data-y3client-inventory-table-button]')?.focus({preventScroll:true});});panel.appendChild(back);
         const hint=doc.createElement('p');hint.textContent='元のサイズコードで表示しています。表は左右にスクロールできます。';hint.style.cssText='font-size:12px;color:#737b82;';panel.appendChild(hint);
         const scroll=doc.createElement('div');scroll.setAttribute('data-y3client-inventory-raw-scroll','');scroll.setAttribute('role','region');scroll.setAttribute('aria-label','元の在庫表');scroll.tabIndex=0;
         const copy=source.cloneNode(true), originals=[source,...source.querySelectorAll('*')], copies=[copy,...copy.querySelectorAll('*')];
@@ -1566,7 +1746,14 @@ enum LegacySiteSupport {
           for(const [name,text] of [['hyouzi','表示'],['Front','前へ'],['Back','次へ']]){
             const control=doc.querySelector('input[name="'+name+'"]');if(!control)continue;
             const button=doc.createElement('button');button.type='button';button.textContent=text;button.disabled=control.disabled;button.setAttribute('aria-label','在庫結果 '+text);
-            button.addEventListener('click',()=>{if(!currentDocument(primary)||!control.isConnected||control.disabled)return;original.value=select.value;control.click();});section.appendChild(button);
+            button.addEventListener('click',()=>{
+              if(!currentDocument(primary)||!control.isConnected||control.disabled)return;
+              original.value=select.value;
+              // Mark before delegation; the generic observer's debounce avoids counting twice.
+              const navigation=host.__y3ClientNavigation||(host.__y3ClientNavigation={submissionRevision:0,resultSubmissionRevision:0});
+              navigation.lastSubmissionAt=Date.now();navigation.submissionRevision=Math.min((navigation.submissionRevision||0)+1,1000000000);
+              control.click();
+            });section.appendChild(button);
           }
           view.appendChild(section);
         }
@@ -1594,6 +1781,14 @@ enum LegacySiteSupport {
           const pair=inventoryPair(frames);
           if(!pair){invalidate();return false;}
           const {primary,secondary,matrix,sourceTable}=pair;
+          const submission=host.__y3ClientNavigation?.submissionRevision||0;
+          const matrixSignature=JSON.stringify(matrix);
+          const summarySignature=JSON.stringify(pair.summary);
+          if(lastReadySource&&submission>lastReadySource.submission){
+            const matrixFresh=secondary.doc!==lastReadySource.document||sourceTable!==lastReadySource.table||matrixSignature!==lastReadySource.signature;
+            const summaryFresh=primary.doc!==lastReadySource.primaryDocument||summarySignature!==lastReadySource.summarySignature||pair.summaryTables.length!==lastReadySource.summaryTables.length||pair.summaryTables.some((table,index)=>table!==lastReadySource.summaryTables[index]);
+            if(!matrixFresh||!summaryFresh){invalidate();return false;}
+          }
           const api=primary.win.__y3InventoryPresentation;
           if(!api){invalidate();return false;}
           const summary={...pair.summary};
@@ -1605,6 +1800,12 @@ enum LegacySiteSupport {
           const samePrimary=state.primary===primary.doc;
           if(!samePrimary){invalidate();state.mode='cards';}
           if(!state.view){state.view=primary.doc.createElement('div');state.view.setAttribute('data-y3client-inventory-view','');state.mount=primary.doc.createElement('div');state.view.appendChild(state.mount);}
+          const active=primary.doc.activeElement;
+          const rawBackFocused=state.raw?.contains(active)&&active.hasAttribute('data-y3client-inventory-back');
+          const rawLinkIndex=state.raw?.contains(active)&&active.tagName==='A'?Array.from(state.raw.querySelectorAll('a')).indexOf(active):-1;
+          const pagerFocused=active?.closest('[data-y3client-inventory-pages]');
+          const pagerLabel=pagerFocused?active.getAttribute('aria-label'):null;
+          const searchFocused=active?.parentElement===state.view&&active.hasAttribute('data-y3client-inventory-back');
           if(!api.renderInventory(summary,matrix,state.mount)){invalidate();return false;}
           for(const child of Array.from(state.view.children))if(child!==state.mount)child.remove();
           state.raw=createRawView(primary.doc,sourceTable,{...summary,productName:matrix.product.productName});state.raw.hidden=state.mode!=='table';state.mount.hidden=state.mode==='table';state.view.appendChild(state.raw);
@@ -1614,10 +1815,15 @@ enum LegacySiteSupport {
           secondary.doc.documentElement.setAttribute('data-y3client-inventory-secondary','');
           if(!state.view.isConnected)primary.doc.body.prepend(state.view);
           state.primary=primary.doc;state.secondary=secondary.doc;state.signature=signature;state.sourceTable=sourceTable;state.merged=true;
+          if(rawBackFocused)state.raw.querySelector('[data-y3client-inventory-back]')?.focus({preventScroll:true});
+          else if(rawLinkIndex>=0)state.raw.querySelectorAll('a')[rawLinkIndex]?.focus({preventScroll:true});
+          else if(pagerLabel)Array.from(state.view.querySelectorAll('[data-y3client-inventory-pages] [aria-label]')).find(control=>control.getAttribute('aria-label')===pagerLabel)?.focus({preventScroll:true});
+          else if(searchFocused)Array.from(state.view.children).find(control=>control.hasAttribute('data-y3client-inventory-back'))?.focus({preventScroll:true});
           if(!state.view.__y3TableHandler){state.view.__y3TableHandler=true;state.view.addEventListener('y3client:inventory-show-table',showTable);}
           const navigation=host.__y3ClientNavigation||(host.__y3ClientNavigation={submissionRevision:0,resultSubmissionRevision:0});
           navigation.resultSubmissionRevision=navigation.submissionRevision||0;
           state.readySubmission=navigation.resultSubmissionRevision;
+          lastReadySource={submission:state.readySubmission,document:secondary.doc,table:sourceTable,signature:matrixSignature,primaryDocument:primary.doc,summaryTables:pair.summaryTables,summarySignature};
           return true;
         }catch(_){invalidate();return false;}finally{running=false;}
       }
@@ -1649,7 +1855,9 @@ enum LegacySiteSupport {
             }
             if (index < 0) continue;
             // The export service has another port. Recognize its parent-owned FRAME without inspecting it.
-            if (/\/dstz210_2\.asp$/i.test(win.location.pathname) && element.name === 'dstz210_2_2') {
+            const exportFamily = /\/dstz(210|240|280|300|710|730)_2\.asp$/i.exec(win.location.pathname)?.[1];
+            const exportSuffix = /^(710|730)$/.test(exportFamily || '') ? '_3_2' : '_2_2';
+            if (exportFamily && element.name === 'dstz' + exportFamily + exportSuffix) {
               panes.push({ path: path.concat(index), kind: 'export' });
               if (panes.length >= 12) return;
               continue;
@@ -1708,8 +1916,9 @@ enum LegacySiteSupport {
           // Resolve the FRAME in the trusted parent rather than reading a cross-origin frameElement.
           let branch = Array.from(win.document.querySelectorAll('frame')).find(element => element.contentWindow === child);
           if (!branch || branch.tagName !== 'FRAME' || branch.ownerDocument !== win.document) return false;
-          const opaqueExport = position === path.length - 1 && /\/dstz210_2\.asp$/i.test(win.location.pathname) &&
-            branch.name === 'dstz210_2_2';
+          const exportFamily = /\/dstz(210|240|280|300)_2\.asp$/i.exec(win.location.pathname)?.[1];
+          const opaqueExport = position === path.length - 1 && exportFamily &&
+            branch.name === 'dstz' + exportFamily + '_2_2';
           if (!trusted(child) && !opaqueExport) return false;
           for (let parent = branch.parentElement; parent && parent.tagName === 'FRAMESET'; parent = branch.parentElement) {
             const children = Array.from(parent.children).filter(node => /^(FRAME|FRAMESET)$/.test(node.tagName));

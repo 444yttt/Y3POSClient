@@ -69,6 +69,7 @@ final class BrowserModel: NSObject, ObservableObject {
     private var resetNavigation: WKNavigation?
     private var requestedURLs: [ObjectIdentifier: URL] = [:]
     private var paneLists: [ObjectIdentifier: [FramePane]] = [:]
+    private var framedViews: Set<ObjectIdentifier> = []
     private var focusedPanePaths: [ObjectIdentifier: [Int]] = [:]
     private var frameDiscoveryTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
     private var framePaneEpochs: [ObjectIdentifier: Int] = [:]
@@ -167,6 +168,7 @@ final class BrowserModel: NSObject, ObservableObject {
 
     func back() { if !isResetting { activeWebView.goBack() } }
     func forward() { if !isResetting { activeWebView.goForward() } }
+    func dismissKeyboard() { activeWebView.endEditing(true) }
     func home() {
         guard !isResetting else { return }
         closeAllPopups()
@@ -523,6 +525,7 @@ final class BrowserModel: NSObject, ObservableObject {
         let id = ObjectIdentifier(view)
         frameDiscoveryTasks.removeValue(forKey: id)?.cancel()
         paneLists.removeValue(forKey: id)
+        framedViews.remove(id)
         focusedPanePaths.removeValue(forKey: id)
         initialFrameFocusApplied.remove(id)
         observedSearchSubmissions.removeValue(forKey: id)
@@ -532,16 +535,23 @@ final class BrowserModel: NSObject, ObservableObject {
         if view === activeWebView { framePanes = []; selectedFramePaneID = nil }
     }
 
-    private func scheduleFrameDiscovery(in view: WKWebView) {
+    private func scheduleFrameDiscovery(in view: WKWebView, waitForLateResults: Bool = false) {
         let id = ObjectIdentifier(view)
         frameDiscoveryTasks[id]?.cancel()
         frameDiscoveryTasks[id] = Task { @MainActor [weak self, weak view] in
-            // A bounded series covers ordinary frame loads without background polling.
-            let delays: [UInt64] = [0, 350_000_000, 900_000_000]
-            for delay in delays {
+            // Extend only an unfinished initial/search result after the main document has loaded.
+            // This also covers report scripts that build their table from a delayed load callback.
+            let delays: [UInt64] = [0, 350_000_000, 900_000_000, 1_250_000_000, 1_250_000_000, 1_250_000_000]
+            for (index, delay) in delays.enumerated() {
                 if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
                 guard !Task.isCancelled, let self, let view, !self.isResetting,
                       let url = view.url, URLPolicy.isTrusted(url) else { return }
+                if index >= 3 {
+                    let awaitingSearch = self.pendingResultFocus[id] != nil
+                    let awaitingInitialPane = waitForLateResults && self.framedViews.contains(id)
+                        && (self.paneLists[id] ?? []).isEmpty
+                    if !awaitingSearch && !awaitingInitialPane { return }
+                }
                 self.discoverFramePanes(in: view)
             }
         }
@@ -554,13 +564,15 @@ final class BrowserModel: NSObject, ObservableObject {
         // Read the structural panes and search counters together. Neither script returns site data.
         let script = "(() => { const panes = " + LegacySiteSupport.discoverFrames
             + "\n const state = " + LegacySiteSupport.navigationState
-            + "\n return { panes, state }; })()"
+            + "\n return { panes, state, framed: !!document.querySelector('frameset') }; })()"
         view.evaluateJavaScript(script) { [weak self, weak view] result, error in
             Task { @MainActor [weak self, weak view] in
                 guard let self, let view, !self.isResetting,
                       let url = view.url, URLPolicy.isTrusted(url), error == nil,
                       (self.framePaneEpochs[id] ?? 0) == epoch else { return }
                 let snapshot = result as? [String: Any] ?? [:]
+                if snapshot["framed"] as? Bool == true { self.framedViews.insert(id) }
+                else { self.framedViews.remove(id) }
                 let records = snapshot["panes"] as? [[String: Any]] ?? []
                 var resultIndex = 0
                 var panes: [FramePane] = []
@@ -855,6 +867,24 @@ extension BrowserModel: WKNavigationDelegate {
         let attachment = disposition.split(separator: ";", maxSplits: 1).first.map {
             String($0).trimmingCharacters(in: .whitespaces).lowercased()
         } == "attachment"
+        if navigationResponse.isForMainFrame, !attachment, navigationResponse.canShowMIMEType,
+           let response = navigationResponse.response as? HTTPURLResponse, response.statusCode >= 400 {
+            let status = response.statusCode
+            let message: String
+            switch status {
+            case 401, 403:
+                message = "接続が許可されていません（HTTP \(status)）。ログインし直し、解決しない場合はシステム管理者へ連絡してください。"
+            case 404:
+                message = "ページが見つかりません（HTTP 404）。ログイン画面から接続し直してください。"
+            default:
+                message = "サーバーがエラーを返しました（HTTP \(status)）。時間をおいて接続し直してください。"
+            }
+            clearFramePanes(in: webView)
+            failures[ObjectIdentifier(webView)] = ConnectionFailure(title: "ページを表示できません", message: message, code: status)
+            decisionHandler(.cancel)
+            refreshState()
+            return
+        }
         decisionHandler(attachment || !navigationResponse.canShowMIMEType ? .download : .allow)
         if !navigationResponse.isForMainFrame, !attachment, navigationResponse.canShowMIMEType,
            let url = navigationResponse.response.url, URLPolicy.isTrusted(url) {
@@ -873,7 +903,7 @@ extension BrowserModel: WKNavigationDelegate {
         if isResetting, let navigation, let resetNavigation, navigation === resetNavigation { finishReset(); return }
         refreshState()
         resumeDialogs()
-        scheduleFrameDiscovery(in: webView)
+        scheduleFrameDiscovery(in: webView, waitForLateResults: true)
         fillSavedStaffCredentials(in: webView)
     }
 

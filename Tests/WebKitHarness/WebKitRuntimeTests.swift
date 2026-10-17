@@ -46,7 +46,7 @@ private final class FixtureSession {
     let observer = FixtureObserver()
     private let window: UIWindow
 
-    init(path: String) {
+    init(path: String, width: CGFloat = 390) {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         let controller = configuration.userContentController
@@ -63,11 +63,11 @@ private final class FixtureSession {
             controller.addUserScript(WKUserScript(source: localScript(source),
                 injectionTime: .atDocumentEnd, forMainFrameOnly: false))
         }
-        view = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 844), configuration: configuration)
+        view = WKWebView(frame: CGRect(x: 0, y: 0, width: width, height: 844), configuration: configuration)
         view.navigationDelegate = observer
         let controllerView = UIViewController()
         controllerView.view = view
-        window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window = UIWindow(frame: CGRect(x: 0, y: 0, width: width, height: 844))
         window.rootViewController = controllerView
         window.makeKeyAndVisible()
         view.load(URLRequest(url: URL(string: fixtureOrigin + path)!))
@@ -345,6 +345,335 @@ final class WebKitRuntimeTests: XCTestCase {
         XCTAssertEqual(unitsPreserveInventory, true, "Six unit choices must preserve size rows and primary/detail quantities")
         XCTAssertEqual(session.observer.failures, [])
         XCTAssertEqual(session.observer.scriptErrors, [])
+    }
+
+    @MainActor
+    func testSameProductSubmissionWaitsForBothFrameGenerationsInEitherOrder() async throws {
+        for metadataFirst in [true, false] {
+            let session = FixtureSession(path: "/scripts/verona/print/prtz011_2.asp")
+            defer { session.close() }
+            try await session.waitForLoad()
+            try await eventually(session.view, "!!frames[0]?.document.querySelector('[data-y3client-inventory]')")
+            let valid = try await session.view.evaluateJavaScript("""
+                (()=>{
+                  const primary=frames[0].document, secondary=frames[1].document;
+                  const coordinator=window.__y3ClientInventoryMerge;
+                  const navigation=window.__y3ClientNavigation;
+                  const next=(navigation.submissionRevision||0)+1;
+                  navigation.submissionRevision=next;
+                  const pending=()=>coordinator.reconcile()===false &&
+                    navigation.resultSubmissionRevision!==next &&
+                    !primary.querySelector('[data-y3client-inventory]');
+                  if(!pending())return false;
+                  const replaceSummary=()=>{
+                    const source=primary.getElementById('inventory-summary');
+                    source.replaceWith(source.cloneNode(true));
+                  };
+                  const replaceMatrix=()=>{
+                    const source=secondary.getElementById('T01_H');
+                    source.replaceWith(source.cloneNode(true));
+                  };
+                  if(\(metadataFirst))replaceSummary();else replaceMatrix();
+                  if(!pending())return false;
+                  if(\(metadataFirst))replaceMatrix();else replaceSummary();
+                  return coordinator.reconcile()===true && navigation.resultSubmissionRevision===next &&
+                    primary.querySelectorAll('[data-y3client-inventory]').length===1 &&
+                    primary.querySelectorAll('[data-y3client-inventory-size-row]').length===12;
+                })()
+                """) as? Bool
+            XCTAssertEqual(valid, true, "Same-SKU identical clones must wait for both generations; metadata first: \(metadataFirst)")
+            XCTAssertEqual(session.observer.failures, [])
+            XCTAssertEqual(session.observer.scriptErrors, [])
+        }
+    }
+
+    @MainActor
+    func testInventoryUnitAndStockFilterKeepKeyboardFocusAcrossRenders() async throws {
+        let session = FixtureSession(path: "/scripts/verona/print/prtz011_2.asp")
+        defer { session.close() }
+        try await session.waitForLoad()
+        try await eventually(session.view, "!!frames[0]?.document.querySelector('[data-y3client-inventory]')")
+        let focused = try await session.view.evaluateJavaScript("(" + localScript(LegacySiteSupport.frameFocus) + ")([0])") as? Bool
+        XCTAssertEqual(focused, true)
+        let valid = try await session.view.evaluateJavaScript("""
+            (()=>{
+              const doc=frames[0].document;
+              const unit=doc.querySelector('[data-y3client-size-unit="UK"]');
+              unit.focus();if(doc.activeElement!==unit)return false;unit.click();
+              if(doc.activeElement?.getAttribute('data-y3client-size-unit')!=='UK' ||
+                 doc.activeElement.getAttribute('aria-pressed')!=='true')return false;
+              const filter=doc.querySelector('[data-y3client-inventory-stock-filter]');
+              filter.focus();if(doc.activeElement!==filter)return false;filter.click();
+              const currentFilter=doc.querySelector('[data-y3client-inventory-stock-filter]');
+              if(doc.activeElement!==currentFilter || !currentFilter.checked)return false;
+              const snapshot=()=>JSON.stringify(Array.from(doc.querySelectorAll('[data-y3client-inventory-size-row],[data-y3client-inventory-detail-row]')).map(row=>[
+                row.getAttribute('data-y3client-size-code'),...Array.from(row.cells).slice(1).map(cell=>cell.textContent)]));
+              const before=snapshot();
+              const next=doc.querySelector('[data-y3client-size-unit="USW"]');next.focus();next.click();
+              return doc.activeElement?.getAttribute('data-y3client-size-unit')==='USW' &&
+                doc.activeElement.getAttribute('aria-pressed')==='true' &&
+                doc.querySelector('[data-y3client-inventory-stock-filter]').checked &&
+                doc.querySelectorAll('[data-y3client-inventory-size-row]').length===10 &&
+                doc.querySelectorAll('[data-y3client-inventory-detail-row]').length===10 && snapshot()===before;
+            })()
+            """) as? Bool
+        XCTAssertEqual(valid, true, "Rerendered unit/filter controls must retain DOM keyboard focus and filtered quantities")
+        XCTAssertEqual(session.observer.failures, [])
+        XCTAssertEqual(session.observer.scriptErrors, [])
+    }
+
+    @MainActor
+    func testSelectAndRadioOnlyFrameSearchIsAccessibleAndTracksRealPost() async throws {
+        let session = FixtureSession(path: "/scripts/verona/print/prtz030_1.asp?scenario=select-radio")
+        defer { session.close() }
+        try await session.waitForLoad()
+        let focused = try await session.view.evaluateJavaScript("(" + localScript(LegacySiteSupport.frameFocus) + ")([0])") as? Bool
+        XCTAssertEqual(focused, true)
+        let prepared = try await session.view.evaluateJavaScript("""
+            (()=>{
+              const win=frames[0], doc=win.document, form=doc.getElementById('select-radio-search');
+              const store=doc.getElementById('search-store'), radio=doc.getElementById('group-product');
+              const name=control=>{
+                if(control.getAttribute('aria-label')?.trim())return control.getAttribute('aria-label').trim();
+                const ids=(control.getAttribute('aria-labelledby')||'').split(/ +/).filter(Boolean);
+                if(ids.length)return ids.map(id=>doc.getElementById(id)?.textContent.trim()||'').join(' ').trim();
+                return Array.from(control.labels||[]).map(label=>label.textContent.trim()).join(' ').trim();
+              };
+              if(!form || store.form!==form || radio.form!==form || form.target!=='prtz030_2' ||
+                 form.method.toLowerCase()!=='post' || name(store)!=='店舗' || name(radio)!=='商品別' ||
+                 name(doc.getElementById('group-store'))!=='店舗別')return false;
+              const targets=[store,doc.getElementById('search-submit'),...Array.from(doc.querySelectorAll('label')).filter(label=>label.control?.type==='radio')];
+              if(targets.length<4 || !targets.every(node=>{
+                const rect=node.getBoundingClientRect();
+                return rect.left>=0 && rect.right<=win.innerWidth+1 && rect.height>=44;
+              }) || doc.documentElement.scrollWidth>win.innerWidth+1)return false;
+              store.value='west';store.dispatchEvent(new win.Event('change',{bubbles:true}));radio.click();
+              doc.getElementById('search-submit').click();
+              return win.fixtureSelectChanges===1 && win.fixtureRadioClicks===1 &&
+                win.fixtureSearchSubmissions===1 && radio.checked;
+            })()
+            """) as? Bool
+        XCTAssertEqual(prepared, true, "Select/radio-only search controls need names, phone widths and original handlers")
+        try await eventually(session.view, """
+            frames[1]?.fixtureRequestMethod==='POST' && window.__y3ClientNavigation?.submissionRevision===1 &&
+            window.__y3ClientNavigation?.resultSubmissionRevision===1
+            """)
+        let submitted = try await session.view.evaluateJavaScript("""
+            frames[1].fixtureSubmittedQuery.shop_code==='west' &&
+            frames[1].fixtureSubmittedQuery.group_by==='product' &&
+            frames[1].fixtureSubmittedQuery.unchanged==='FICTIONAL-SEARCH-TOKEN'
+            """) as? Bool
+        XCTAssertEqual(submitted, true, "Original frame target, hidden query and successful POST must remain intact")
+        XCTAssertEqual(session.observer.failures, [])
+        XCTAssertEqual(session.observer.scriptErrors, [])
+    }
+
+    @MainActor
+    func testFrozenTableScrollsBothWaysWithoutClampingAwayFinalColumns() async throws {
+        let session = FixtureSession(path: "/scripts/verona/print/prtz030_2_2.asp?scenario=frozen-widths")
+        defer { session.close() }
+        try await session.waitForLoad()
+        try await eventually(session.view, "!!document.querySelector('#D_FIXTURE_H[data-y3client-frozen-header]') && !!document.querySelector('#D_FIXTURE_B[data-y3client-frozen-body]')")
+        _ = try await session.view.evaluateJavaScript("document.getElementById('D_FIXTURE_H').scrollLeft=120; true")
+        try await eventually(session.view, "document.getElementById('D_FIXTURE_B').scrollLeft===120")
+        _ = try await session.view.evaluateJavaScript("document.getElementById('D_FIXTURE_B').scrollLeft=240; true")
+        try await eventually(session.view, "document.getElementById('D_FIXTURE_H').scrollLeft===240")
+        _ = try await session.view.evaluateJavaScript("const body=document.getElementById('D_FIXTURE_B'); body.scrollLeft=body.scrollWidth-body.clientWidth; true")
+        try await eventually(session.view, """
+            (()=>{const state=window.fixtureFrozenMetrics();return state.B.max>state.H.max &&
+              state.B.left===state.B.max && state.H.left===state.H.max;})()
+            """)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let preserved = try await session.view.evaluateJavaScript("""
+            (()=>{
+              const state=window.fixtureFrozenMetrics();
+              const link=document.getElementById('frozen-product');link.click();
+              return state.B.left===state.B.max &&
+                window.fixtureFrozenOriginals.header===document.getElementById('FIXTURE_H') &&
+                window.fixtureFrozenOriginals.body===document.getElementById('FIXTURE_B') &&
+                link===window.fixtureFrozenOriginals.link && link.onclick===window.fixtureFrozenLinkHandler &&
+                window.fixtureFrozenLinkClicks===1;
+            })()
+            """) as? Bool
+        XCTAssertEqual(preserved, true, "Unequal scroll ranges must preserve the body's final columns and original nodes/handlers")
+        XCTAssertEqual(session.observer.failures, [])
+        XCTAssertEqual(session.observer.scriptErrors, [])
+    }
+
+    @MainActor
+    func testGenericResultPagerRemainsReadyAfterSearchAndItsOwnFramePost() async throws {
+        let session = FixtureSession(path: "/scripts/verona/print/prtz030_1.asp?scenario=result-pager")
+        defer { session.close() }
+        try await session.waitForLoad()
+        try await eventually(session.view, "!!frames[1]?.document.getElementById('result-pager')")
+        let searched = try await session.view.evaluateJavaScript("""
+            (()=>{
+              const doc=frames[0].document;
+              const store=doc.getElementById('search-store');store.value='west';
+              store.dispatchEvent(new frames[0].Event('change',{bubbles:true}));
+              doc.getElementById('group-product').click();doc.getElementById('search-submit').click();
+              return frames[0].fixtureSearchSubmissions===1;
+            })()
+            """) as? Bool
+        XCTAssertEqual(searched, true)
+        try await eventually(session.view, """
+            frames[1]?.fixtureRequestMethod==='POST' && frames[1].fixtureSubmittedQuery.shop_code==='west' &&
+            window.__y3ClientNavigation?.submissionRevision===1 &&
+            window.__y3ClientNavigation?.resultSubmissionRevision===1
+            """)
+        let firstPanes = try await panes(session.view)
+        XCTAssertEqual(firstPanes.first { ($0["path"] as? [Int]) == [1] }?["kind"] as? String, "result")
+        // Treat the second action as a distinct user action outside the submission debounce window.
+        try await Task.sleep(nanoseconds: 250_000_000)
+        let paged = try await session.view.evaluateJavaScript("""
+            (()=>{
+              const win=frames[1], doc=win.document, form=doc.getElementById('result-pager');
+              const select=doc.getElementById('result-page');
+              if(select.form!==form || select.name!=='PgSelect' || form.target!=='prtz030_2' ||
+                 form.method.toLowerCase()!=='post')return false;
+              select.value='2';select.dispatchEvent(new win.Event('change',{bubbles:true}));
+              doc.getElementById('result-page-submit').click();
+              return win.fixturePagerSubmissions===1;
+            })()
+            """) as? Bool
+        XCTAssertEqual(paged, true)
+        try await eventually(session.view, """
+            frames[1]?.fixtureRequestMethod==='POST' && frames[1].fixtureSubmittedQuery.PgSelect==='2' &&
+            frames[1].fixtureSubmittedQuery.unchanged==='FICTIONAL-PAGER-TOKEN' &&
+            window.__y3ClientNavigation?.submissionRevision===2 &&
+            window.__y3ClientNavigation?.resultSubmissionRevision===2
+            """)
+        let result = try await session.view.evaluateJavaScript("""
+            frames[1].document.getElementById('result-page').value==='2' &&
+            frames[1].document.getElementById('result-page').form===frames[1].document.getElementById('result-pager')
+            """) as? Bool
+        XCTAssertEqual(result, true)
+        let secondPanes = try await panes(session.view)
+        XCTAssertEqual(secondPanes.first { ($0["path"] as? [Int]) == [1] }?["kind"] as? String, "result")
+        XCTAssertEqual(session.observer.failures, [])
+        XCTAssertEqual(session.observer.scriptErrors, [])
+    }
+
+    @MainActor
+    func testMalformedCompoundFormKeepsParserOwnershipLayoutAndDuplicatePostValues() async throws {
+        for width in [390, 320] {
+            let session = FixtureSession(path: "/scripts/verona/print/prtz098_1_1.asp", width: CGFloat(width))
+            defer { session.close() }
+            try await session.waitForLoad()
+            try await eventually(session.view, "document.querySelectorAll('[data-y3client-compound-cell]').length===2")
+            let preserved = try await session.view.evaluateJavaScript("""
+                (()=>{
+                  const original=window.fixtureCompound, current=Array.from(original.form.elements);
+                  if(!original.nonAncestral || current.length!==24 || current.length!==original.controls.length ||
+                     original.form.method!==original.method || original.form.target!==original.target ||
+                     original.form.action!==original.action)return false;
+                  if(!current.every((control,index)=>{
+                    const field=original.fields[index];
+                    if(control!==original.controls[index] || control!==field.field || control.form!==field.form ||
+                       control.name!==field.name || control.type!==field.type || control.value!==field.value ||
+                       control.onclick!==field.onclick || control.onchange!==field.onchange)return false;
+                    let parent=control.parentElement;
+                    for(const ancestor of original.ancestors[index]){if(parent!==ancestor)return false;parent=parent.parentElement;}
+                    return true;
+                  }))return false;
+                  const label=id=>{
+                    const control=document.getElementById(id);
+                    return control.getAttribute('aria-label') || (control.getAttribute('aria-labelledby')||'').split(' ').filter(Boolean).map(key=>document.getElementById(key)?.textContent.trim()||'').join(' ');
+                  };
+                  if(label('fixture-date-start')!=='架空期間 開始日' || label('fixture-date-end')!=='架空期間 終了日' ||
+                     label('fixture-code-3')!=='架空分類 3' || document.querySelectorAll('[data-y3client-compound-label]').length!==6)return false;
+                  const box=node=>node.getBoundingClientRect();
+                  const dates=['fixture-date-start','fixture-date-end'].map(id=>box(document.getElementById(id)));
+                  if(Math.abs(dates[0].top-dates[1].top)>1 || dates[0].right>dates[1].left)return false;
+                  for(const name of ['fixtureSub','fixtureCode']){
+                    const boxes=Array.from(document.querySelectorAll('input[name="'+name+'"]').values()).map(box);
+                    if(boxes.length!==5 || boxes.some(rect=>Math.abs(rect.top-boxes[0].top)>1))return false;
+                  }
+                  const controls=Array.from(document.querySelectorAll('#fixture-compound-table input:not([type="hidden"]),#fixture-compound-table select'));
+                  if(!controls.every(control=>{const rect=box(control);return rect.left>=0 && rect.right<=innerWidth+1 && rect.height>=44;}) ||
+                     document.documentElement.scrollWidth>innerWidth+1)return false;
+                  return original.calendar===document.getElementById('ui-datepicker-div') &&
+                    original.calendar.outerHTML===original.calendarHTML &&
+                    !original.calendar.querySelector('[data-y3client-result-list],[data-y3client-result-tools],[data-y3client-table-scroll]');
+                })()
+                """) as? Bool
+            XCTAssertEqual(preserved, true, "Malformed FORM ownership, individual slots and phone layout must survive at \(width)px")
+            let submitted = try await session.view.evaluateJavaScript("""
+                (()=>{
+                  for(const id of ['fixture-brand-help','fixture-sub-help','fixture-code-help'])document.getElementById(id).click();
+                  const season=document.getElementById('fixture-season');season.value='fictional-b';
+                  season.dispatchEvent(new Event('change',{bubbles:true}));
+                  document.getElementById('fixture-sub-3').value='B3';document.getElementById('fixture-code-3').value='Z3';
+                  if(JSON.stringify(window.fixtureHelperCalls)!==JSON.stringify(['brand','sub','code']) ||
+                     window.fixtureSeasonChanges!==1 || !season.options[2].disabled)return false;
+                  document.getElementById('fixture-search').click();
+                  return window.fixtureSubmitCalls===1 && document.forms.fixtureSearch.target==='fixtureResult';
+                })()
+                """) as? Bool
+            XCTAssertEqual(submitted, true)
+            try await eventually(session.view, "frames[0]?.fixtureRequestMethod==='POST'")
+            let posted = try await session.view.evaluateJavaScript("""
+                (()=>{
+                  const arrays=frames[0].fixtureSubmittedArrays, values=frames[0].fixtureSubmittedQuery;
+                  return JSON.stringify(arrays.fixtureSub)===JSON.stringify(['A1','A2','B3','A4','A5']) &&
+                    JSON.stringify(arrays.fixtureCode)===JSON.stringify(['Q1','Q2','Z3','Q4','Q5']) &&
+                    values.fixture_token==='fictional-unchanged' && values.fixture_brand_state==='synthetic-brand' &&
+                    values.fixture_sub_state==='synthetic-sub' && values.fixture_code_state==='synthetic-code' &&
+                    values.fixtureYYYYMMDD_F==='20261001' && values.fixtureYYYYMMDD_T==='20261003' &&
+                    values.fixtureSeason==='fictional-b';
+                })()
+                """) as? Bool
+            XCTAssertEqual(posted, true, "Every original slot and hidden value must reach the original frame POST at \(width)px")
+            XCTAssertEqual(session.observer.failures, [])
+            XCTAssertEqual(session.observer.scriptErrors, [])
+        }
+    }
+
+    @MainActor
+    func testInteractiveReportsScrollInPlaceWithoutBreakingRowFormPosts() async throws {
+        for (scenario, buttonID) in [("", "basic-button-a"), ("nested", "nested-button-a"),
+                                      ("frozen-clone", "action-body-button-a"), ("frozen-header", "plain-body-button-a")] {
+            let path = "/scripts/verona/print/prtz098_4.asp" + (scenario.isEmpty ? "" : "?scenario=" + scenario)
+            let session = FixtureSession(path: path, width: 320)
+            defer { session.close() }
+            try await session.waitForLoad()
+            try await eventually(session.view, "!!document.querySelector('table[data-y3client-action-table][data-y3client-table-scroll]')")
+            let preserved = try await session.view.evaluateJavaScript("""
+                (()=>{
+                  const original=window.fixtureAction, tables=Array.from(document.querySelectorAll('table'));
+                  const forms=Array.from(document.forms), controls=Array.from(document.querySelectorAll('input,select,textarea,button'));
+                  if(tables.length!==original.tables.length || !tables.every((node,index)=>node===original.tables[index]) ||
+                     forms.length!==original.forms.length || !forms.every((node,index)=>node===original.forms[index]) ||
+                     controls.length!==original.controls.length)return false;
+                  if(!controls.every((control,index)=>{
+                    const field=original.fields[index];
+                    if(control!==original.controls[index] || control.form!==field.form || control.name!==field.name ||
+                       control.type!==field.type || control.value!==field.value || control.onclick!==field.onclick ||
+                       control.onchange!==field.onchange)return false;
+                    let parent=control.parentElement;
+                    for(const ancestor of original.ancestors[index]){if(parent!==ancestor)return false;parent=parent.parentElement;}
+                    return true;
+                  }))return false;
+                  const button=document.getElementById('\(buttonID)'), table=button.closest('table');
+                  const rect=table.getBoundingClientRect(), style=getComputedStyle(table);
+                  if(!table.hasAttribute('data-y3client-action-table') || !table.hasAttribute('data-y3client-table-scroll') ||
+                     !['auto','scroll'].includes(style.overflowX) || table.scrollWidth<=table.clientWidth ||
+                     rect.left<0 || rect.right>innerWidth+1 || document.documentElement.scrollWidth>innerWidth+1 ||
+                     !button.form || button.form.target!=='sink' || button.form.method.toLowerCase()!=='post')return false;
+                  table.scrollLeft=table.scrollWidth-table.clientWidth;
+                  if(table.scrollLeft<=0)return false;
+                  button.click();return window.fixtureClicks===1;
+                })()
+                """) as? Bool
+            XCTAssertEqual(preserved, true, "Interactive report must scroll without moving its row-form nodes: \(scenario)")
+            try await eventually(session.view, "frames[0]?.fixtureRequestMethod==='POST'")
+            let posted = try await session.view.evaluateJavaScript("""
+                JSON.stringify(frames[0].fixtureSubmittedArrays.fx_repeat)===JSON.stringify(['fictional-a1','fictional-a2'])
+                """) as? Bool
+            XCTAssertEqual(posted, true, "Original row form must POST both duplicate fields: \(scenario)")
+            XCTAssertEqual(session.observer.failures, [])
+            XCTAssertEqual(session.observer.scriptErrors, [])
+        }
     }
 
     @MainActor
