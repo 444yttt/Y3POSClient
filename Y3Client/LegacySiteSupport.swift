@@ -686,13 +686,15 @@ enum LegacySiteSupport {
       }
 
       function parseInventorySummary(source) {
-        const summary = { productCode: '', productName: '', updatedAt: '', categoryLabel: '' };
+        const summary = { productCode: '', productName: '', updatedAt: '', categoryLabel: '', categoryCode: '' };
         if (!source || !(source.querySelectorAll || source.tagName === 'TABLE')) return summary;
         const tables = source.tagName === 'TABLE' ? [source] : Array.from(source.querySelectorAll('table')).slice(0, 32);
         const fields = {
           '品番': 'productCode', '商品名': 'productName', '作成日付': 'updatedAt', '作成日時': 'updatedAt',
           '更新日時': 'updatedAt', '更新日付': 'updatedAt', '更新日': 'updatedAt', 'カテゴリ': 'categoryLabel',
           'カテゴリー': 'categoryLabel', '商品分類': 'categoryLabel',
+          'カテゴリNO': 'categoryCode', 'カテゴリーNO': 'categoryCode', 'カテゴリ番号': 'categoryCode',
+          'カテゴリー番号': 'categoryCode', 'カテゴリコード': 'categoryCode', 'カテゴリーコード': 'categoryCode',
         };
         for (const table of tables) {
           const rows = tableRows(table).slice(0, 12);
@@ -701,16 +703,16 @@ enum LegacySiteSupport {
             const cells = Array.from(row.cells);
             for (let index = 0; index < cells.length; index++) {
               const label = nodeText(cells[index]);
-              const key = fields[keyText(label)];
+              const key = fields[keyText(label).toUpperCase()];
               if (key && !summary[key]) {
                 const beside = cells[index + 1] ? nodeText(cells[index + 1]) : '';
                 const below = rows[rowIndex + 1]?.cells[index] ? nodeText(rows[rowIndex + 1].cells[index]) : '';
-                if (beside && !fields[keyText(beside)]) summary[key] = beside;
-                else if (below && !fields[keyText(below)]) summary[key] = below;
+                if (beside && !fields[keyText(beside).toUpperCase()]) summary[key] = beside;
+                else if (below && !fields[keyText(below).toUpperCase()]) summary[key] = below;
               } else {
-                const inline = label.match(/^(品番|商品名|作成日付|作成日時|更新日時|更新日付|更新日|カテゴリ|カテゴリー|商品分類)\s*[:：]\s*(.+)$/);
+                const inline = label.normalize('NFKC').match(/^(品番|商品名|作成日付|作成日時|更新日時|更新日付|更新日|カテゴリ(?:No|番号|コード)?|カテゴリー(?:No|番号|コード)?|商品分類)\s*[:：]\s*(.+)$/i);
                 if (inline) {
-                  const inlineKey = fields[keyText(inline[1])];
+                  const inlineKey = fields[keyText(inline[1]).toUpperCase()];
                   if (inlineKey && !summary[inlineKey]) summary[inlineKey] = clean(inline[2]);
                 }
               }
@@ -816,6 +818,65 @@ enum LegacySiteSupport {
         return { schemaVersion: 1, orientation: axis === 'サイズ' ? 'sizes-down' : 'colors-down', ignoredPaddingColumns: paddingColumns.length, product: parseInventorySummary(table), sizeCodes, colors };
       }
 
+      function resolveCategory(summary, matrix) {
+        const product = matrix?.product || {};
+        const categories = { '1':'apparelWomen', APW:'apparelWomen', '2':'apparelMen', APM:'apparelMen',
+          '3':'accessories', ACC:'accessories', '4':'footwear', FTW:'footwear', '5':'apparelUnisex', APU:'apparelUnisex' };
+        const oneSizeHint = value => /ワンサイズ|フリーサイズ|ノーサイズ|\b(?:OSFA|ONE[\s_-]*SIZE)\b/.test(clean(value).normalize('NFKC').toUpperCase());
+        const detailHint = value => {
+          const text = clean(value).normalize('NFKC').toUpperCase();
+          const hints = [];
+          if (/ソックス|\bSOCKS?\b/.test(text)) hints.push('socks');
+          if (/帽子|キャップ|ハット|ビーニー|\b(?:CAP|HAT|BEANIE)\b/.test(text)) hints.push('headwear');
+          if (hints.length) return hints.length === 1 ? hints[0] : '';
+          return oneSizeHint(text) ? 'oneSize' : '';
+        };
+        const explicitHint = value => {
+          const text = clean(value).normalize('NFKC').toUpperCase();
+          if (!text) return '';
+          if (own(categories, text)) return categories[text];
+          const token = text.match(/(?:^|[^A-Z])(APW|APM|ACC|FTW|APU)(?:[^A-Z]|$)/)?.[1];
+          if (token) return token === 'ACC' ? (detailHint(text) || categories[token]) : categories[token];
+          if (/フットウェア|シューズ|\b(?:FOOTWEAR|SHOES?)\b/.test(text)) return 'footwear';
+          const detail = detailHint(text);
+          if (detail) return detail;
+          if (/ウーマン|ウィメン|レディース|女性|\bWOM[AE]N\b/.test(text)) return 'apparelWomen';
+          if (/ユニセックス|\bUNISEX\b/.test(text)) return 'apparelUnisex';
+          if (/メンズ|男性|\bM[AE]N\b/.test(text)) return 'apparelMen';
+          if (/アクセサリ|\bACCESSOR(?:Y|IES)\b/.test(text)) return 'accessories';
+          if (/アパレル|ウェア|シャツ|パーカー|スウェット|ジャケット|パンツ|\b(?:APPAREL|CLOTHING)\b/.test(text)) return 'apparel';
+          return '';
+        };
+        const fields = [summary?.categoryCode, summary?.categoryLabel, product.categoryCode, product.categoryLabel].map(clean).filter(Boolean);
+        const hints = fields.map(explicitHint).filter(Boolean);
+        let category = '';
+        for (const hint of hints) {
+          if (!category || category === hint) { category = hint; continue; }
+          if (category === 'apparel' && /^apparel(?:Women|Men|Unisex)$/.test(hint)) { category = hint; continue; }
+          if (hint === 'apparel' && /^apparel(?:Women|Men|Unisex)$/.test(category)) continue;
+          if (category === 'accessories' && ['socks','headwear','oneSize'].includes(hint)) { category = hint; continue; }
+          if (hint === 'accessories' && ['socks','headwear','oneSize'].includes(category)) continue;
+          return ''; // Conflicting explicit categories never borrow another category's size table.
+        }
+        const names = [summary?.productName, product.productName].filter(Boolean).join(' ');
+        const nameHint = detailHint(names);
+        const codes = (matrix?.sizeCodes || []).map(clean);
+        const onlyNS = codes.length > 0 && codes.every(code => code === '601');
+        const explicitOneSize = codes.length > 0 && codes.every(code => ['601','608'].includes(code)) && oneSizeHint([names,...fields].join(' '));
+        const refine = key => key === 'headwear' && (onlyNS || explicitOneSize) ? 'oneSize' : key;
+        if (category === 'accessories') return refine(nameHint) || (onlyNS ? 'oneSize' : '');
+        if (category) {
+          if (explicitOneSize && category !== 'footwear' && category !== 'socks') return 'oneSize';
+          if (onlyNS && category !== 'footwear' && category !== 'socks') return 'oneSize';
+          return category;
+        }
+        if (fields.length) return '';
+        if (nameHint) return refine(nameHint);
+        if (codes.length && codes.every(code => /^(?:30[6-9]|31\d|32[0-4])$/.test(code))) return 'footwear';
+        if (codes.length && codes.every(code => /^10[0-6]$/.test(code))) return 'apparel';
+        return '';
+      }
+
       function configureSizeMappings(definitions) {
         if (!definitions || typeof definitions !== 'object' || Array.isArray(definitions)) return;
         for (const categoryKey of Object.keys(definitions).slice(0, 32)) {
@@ -828,7 +889,7 @@ enum LegacySiteSupport {
             const definitionEntry = definition.codes[code];
             if (!definitionEntry || typeof definitionEntry !== 'object') continue;
             const entry = Object.create(null);
-            for (const unit of ['label', 'JP', 'US', 'EU', 'CH']) {
+            for (const unit of ['label', 'measurement', 'JP', 'US', 'USW', 'UK', 'EU', 'CH']) {
               if (typeof definitionEntry[unit] === 'string' || typeof definitionEntry[unit] === 'number') entry[unit] = clean(definitionEntry[unit]).slice(0, 80);
             }
             category.codes[code] = entry;
@@ -842,11 +903,12 @@ enum LegacySiteSupport {
         const category = own(catalogs, categoryKey) ? catalogs[categoryKey] : null;
         const entry = category && own(category.codes, originalCode) ? category.codes[originalCode] : null;
         if (category?.kind === 'footwear') {
-          const selected = ['JP', 'US', 'EU', 'CH'].includes(unit) ? unit : 'JP';
+          const selected = ['JP', 'US', 'USW', 'UK', 'EU', 'CH'].includes(unit) ? unit : 'JP';
           if (entry && own(entry, selected) && entry[selected] !== '') return { text: entry[selected], unit: selected, code: originalCode, confirmed: true };
           return { text: '—', unit: selected, code: originalCode, confirmed: false };
         }
-        if (entry && own(entry, 'label') && entry.label !== '') return { text: entry.label, unit: '', code: originalCode, confirmed: true };
+        if (entry && own(entry, 'label') && entry.label !== '') return { text: entry.label, unit: '', code: originalCode, confirmed: true,
+          ...(entry.measurement ? { measurement: entry.measurement } : {}) };
         return { text: originalCode, unit: '', code: originalCode, confirmed: false };
       }
 
@@ -868,6 +930,7 @@ enum LegacySiteSupport {
           [data-y3client-size-unit] { min-width:0; min-height:44px; padding:8px 4px; border:0; border-radius:8px; background:transparent; color:#59626c; font:600 13px/1.2 -apple-system,BlinkMacSystemFont,sans-serif; }
           [data-y3client-size-unit][aria-pressed='true'] { background:#111; color:#fff; }
           [data-y3client-inventory-size-note] { margin:0 0 14px; font-size:11px; color:#717984; }
+          [data-y3client-size-measurement] { display:block;margin-top:2px;color:#59626c;font-size:11px;line-height:1.35; }
           [data-y3client-inventory-filter] { margin:0 0 14px; }
           [data-y3client-inventory-filter-label] { display:flex; align-items:center; gap:9px; min-height:44px; color:#303841; font-size:13px; }
           [data-y3client-inventory-stock-filter] { width:20px!important; height:20px!important; min-width:20px!important; min-height:20px!important; margin:0; padding:0!important; accent-color:#111; }
@@ -904,7 +967,7 @@ enum LegacySiteSupport {
         const state = containerState.get(container) || { unit: 'JP', onlyStock: false, openColors: new Set() };
         containerState.set(container, state);
         const metadata = {};
-        for (const key of ['productCode', 'productName', 'updatedAt', 'categoryKey', 'categoryLabel']) metadata[key] = clean(summary?.[key] || matrix.product?.[key]);
+        for (const key of ['productCode', 'productName', 'updatedAt', 'categoryKey', 'categoryLabel', 'categoryCode']) metadata[key] = clean(summary?.[key] || matrix.product?.[key]);
         const category = own(catalogs, metadata.categoryKey) ? catalogs[metadata.categoryKey] : null;
         const element = (tag, attribute, value) => {
           const node = document.createElement(tag);
@@ -935,16 +998,20 @@ enum LegacySiteSupport {
           const selector = element('div', 'data-y3client-size-selector');
           selector.setAttribute('role', 'group');
           selector.setAttribute('aria-label', 'シューズのサイズ表記');
-          for (const unit of ['JP', 'US', 'EU', 'CH']) {
-            const button = element('button', '', unit);
+          const units = ['JP', 'US', 'USW', 'UK', 'EU', 'CH'].filter(unit => ['JP','US','EU','CH'].includes(unit) ||
+            Object.values(category.codes).some(entry => own(entry, unit)));
+          if (units.length > 4) selector.style.gridTemplateColumns = 'repeat(3,minmax(0,1fr))';
+          for (const unit of units) {
+            const button = element('button', '', unit === 'USW' ? 'US W' : unit === 'US' ? 'US M' : unit);
             button.type = 'button';
+            button.setAttribute('aria-label', unit === 'USW' ? 'US ウィメンズ' : unit === 'US' ? 'US メンズ' : unit);
             button.setAttribute('data-y3client-size-unit', unit);
             button.setAttribute('aria-pressed', state.unit === unit ? 'true' : 'false');
             button.addEventListener('click', () => { state.unit = unit; renderInventory(summary, matrix, container); });
             selector.appendChild(button);
           }
           section.appendChild(selector);
-          section.appendChild(element('p', 'data-y3client-inventory-size-note', 'USはメンズ、CHは中国（CHN）の参考換算です。未確認の表記は元コードを併記します。'));
+          section.appendChild(element('p', 'data-y3client-inventory-size-note', 'US Mはメンズ、US Wはウィメンズ。CHは中国（CHN）の参考換算です。空欄・未確認のサイズは換算しません。'));
         } else if (!category) {
           section.appendChild(element('p', 'data-y3client-inventory-size-note', '商品カテゴリを確認できないため、サイズコードを表示しています。'));
         }
@@ -978,7 +1045,9 @@ enum LegacySiteSupport {
             const row = element('tr', detail ? 'data-y3client-inventory-detail-row' : 'data-y3client-inventory-size-row');
             row.setAttribute('data-y3client-size-code', code);
             const sizeCell = element('td');
-            sizeCell.appendChild(document.createTextNode((formatted.unit && formatted.confirmed ? formatted.unit + ' ' : '') + formatted.text));
+            const unitLabel = formatted.unit === 'USW' ? 'US W' : formatted.unit === 'US' ? 'US M' : formatted.unit;
+            sizeCell.appendChild(document.createTextNode((unitLabel && formatted.confirmed ? unitLabel + ' ' : '') + formatted.text));
+            if (formatted.measurement) sizeCell.appendChild(element('span', 'data-y3client-size-measurement', formatted.measurement));
             sizeCell.appendChild(element('span', 'data-y3client-inventory-size-code', formatted.confirmed ? 'コード ' + code : (formatted.unit ? '未確認 · ' + code : 'サイズコード')));
             row.appendChild(sizeCell);
             for (const definition of definitions) row.appendChild(element('td', '', displayValue(color.metrics[definition.key]?.values?.[index])));
@@ -1025,7 +1094,7 @@ enum LegacySiteSupport {
         return true;
       }
 
-      const api = { version: 1, parseInventoryTable, parseInventorySummary, configureSizeMappings, formatSize, renderInventory, onShowTable: null };
+      const api = { version: 1, parseInventoryTable, parseInventorySummary, resolveCategory, configureSizeMappings, formatSize, renderInventory, onShowTable: null };
       window.__y3InventoryPresentation = api;
       document.addEventListener('y3client:inventory-update', event => {
         const detail = event.detail;
@@ -1035,48 +1104,150 @@ enum LegacySiteSupport {
 
     (() => {
       if(location.origin!=='https://adidas-y3.poscmcloud.jp:15505'||!/^\/scripts\/verona\/(?:print|dwh|display)\/prtz\d+(?:_\d+)*\.asp$/i.test(location.pathname))return;
-      // Internal codes confirmed by the user. US men's/EU: adidas manufacturer chart.
-      // CH (CHN): reference conversions from published Y-3/adidas shoe labels.
+      // User-supplied store guide, 2026-10-17. Preserve its blank cells and category boundaries.
+      // Headwear code labels were confirmed earlier; the guide adds S/M/L measurements.
+      // CH is absent from this guide: keep only the previously documented reference conversions.
       const catalog={
       "footwear": {
         "kind": "footwear",
         "title": "シューズ",
         "codes": {
+          "306": {
+            "JP": "22",
+            "UK": "3.5",
+            "US": "4",
+            "EU": "36",
+            "USW": "5"
+          },
+          "307": {
+            "JP": "22.5",
+            "UK": "4",
+            "US": "4.5",
+            "EU": "36 2/3",
+            "USW": "5.5"
+          },
+          "308": {
+            "JP": "23",
+            "UK": "4.5",
+            "US": "5",
+            "EU": "37 1/3",
+            "USW": "6"
+          },
+          "309": {
+            "JP": "23.5",
+            "UK": "5",
+            "US": "5.5",
+            "EU": "38",
+            "USW": "6.5"
+          },
+          "310": {
+            "JP": "24",
+            "UK": "5.5",
+            "US": "6",
+            "EU": "38 2/3",
+            "USW": "7"
+          },
+          "311": {
+            "JP": "24.5",
+            "UK": "6",
+            "US": "6.5",
+            "EU": "39 1/3",
+            "USW": "7.5"
+          },
+          "312": {
+            "JP": "25",
+            "UK": "6.5",
+            "US": "7",
+            "EU": "40",
+            "USW": "8"
+          },
           "313": {
             "JP": "25.5",
+            "UK": "7",
             "US": "7.5",
             "EU": "40 2/3",
+            "USW": "8.5",
             "CH": "250"
           },
           "314": {
             "JP": "26",
+            "UK": "7.5",
             "US": "8",
             "EU": "41 1/3",
+            "USW": "9",
             "CH": "255"
           },
           "315": {
             "JP": "26.5",
+            "UK": "8",
             "US": "8.5",
             "EU": "42",
+            "USW": "9.5",
             "CH": "260"
           },
           "316": {
             "JP": "27",
+            "UK": "8.5",
             "US": "9",
             "EU": "42 2/3",
+            "USW": "10",
             "CH": "265"
           },
           "317": {
             "JP": "27.5",
+            "UK": "9",
             "US": "9.5",
             "EU": "43 1/3",
+            "USW": "10.5",
             "CH": "265"
           },
           "318": {
             "JP": "28",
+            "UK": "9.5",
             "US": "10",
             "EU": "44",
+            "USW": "11",
             "CH": "270"
+          },
+          "319": {
+            "JP": "28.5",
+            "UK": "10",
+            "US": "10.5",
+            "EU": "44 2/3",
+            "USW": "11.5"
+          },
+          "320": {
+            "JP": "29",
+            "UK": "10.5",
+            "US": "11",
+            "EU": "45 1/3",
+            "USW": "12"
+          },
+          "321": {
+            "JP": "29.5",
+            "UK": "11",
+            "US": "11.5",
+            "EU": "46",
+            "USW": "12.5"
+          },
+          "322": {
+            "JP": "30",
+            "UK": "11.5",
+            "US": "12",
+            "EU": "46 2/3",
+            "USW": "13"
+          },
+          "323": {
+            "JP": "30.5",
+            "UK": "12",
+            "US": "12.5",
+            "EU": "47 1/3"
+          },
+          "324": {
+            "JP": "31",
+            "UK": "12.5",
+            "US": "13",
+            "EU": "48"
           }
         }
       },
@@ -1101,12 +1272,60 @@ enum LegacySiteSupport {
           },
           "105": {
             "label": "XL"
+          },
+          "106": {
+            "label": "2XL"
           }
         }
       },
-      "headwear": {
+      "apparelWomen": {
         "kind": "apparel",
-        "title": "帽子",
+        "title": "ウィメンズ",
+        "codes": {
+          "100": {
+            "label": "2XS"
+          },
+          "101": {
+            "label": "XS"
+          },
+          "102": {
+            "label": "S"
+          },
+          "103": {
+            "label": "M"
+          },
+          "104": {
+            "label": "L"
+          }
+        }
+      },
+      "apparelMen": {
+        "kind": "apparel",
+        "title": "メンズ",
+        "codes": {
+          "101": {
+            "label": "XS"
+          },
+          "102": {
+            "label": "S"
+          },
+          "103": {
+            "label": "M"
+          },
+          "104": {
+            "label": "L"
+          },
+          "105": {
+            "label": "XL"
+          },
+          "106": {
+            "label": "2XL"
+          }
+        }
+      },
+      "apparelUnisex": {
+        "kind": "apparel",
+        "title": "ユニセックス",
         "codes": {
           "100": {
             "label": "2XS"
@@ -1125,6 +1344,70 @@ enum LegacySiteSupport {
           },
           "105": {
             "label": "XL"
+          },
+          "106": {
+            "label": "2XL"
+          }
+        }
+      },
+      "headwear": {
+        "kind": "apparel",
+        "title": "帽子",
+        "codes": {
+          "100": {
+            "label": "2XS"
+          },
+          "101": {
+            "label": "XS"
+          },
+          "102": {
+            "label": "S",
+            "measurement": "頭囲 56cm"
+          },
+          "103": {
+            "label": "M",
+            "measurement": "頭囲 58cm"
+          },
+          "104": {
+            "label": "L",
+            "measurement": "頭囲 60cm"
+          },
+          "105": {
+            "label": "XL"
+          }
+        }
+      },
+      "socks": {
+        "kind": "other",
+        "title": "ソックス",
+        "codes": {
+          "605": {
+            "label": "21–22cm",
+            "measurement": "EU 34–36"
+          },
+          "606": {
+            "label": "22–24cm",
+            "measurement": "EU 37–39"
+          },
+          "607": {
+            "label": "24–26cm",
+            "measurement": "EU 40–42"
+          },
+          "608": {
+            "label": "26–28cm",
+            "measurement": "EU 43–45"
+          }
+        }
+      },
+      "oneSize": {
+        "kind": "other",
+        "title": "ワンサイズ",
+        "codes": {
+          "601": {
+            "label": "NS"
+          },
+          "608": {
+            "label": "OSFA"
           }
         }
       }
@@ -1202,7 +1485,7 @@ enum LegacySiteSupport {
         if(matrices.size>1||containsMetricCells)return null;
         const originalControls=Array.from(frame.doc.querySelectorAll('input,textarea')).filter(control=>!control.closest(generated));
         if(originalControls.some(control=>control.tagName==='TEXTAREA'||['text','search','date','password'].includes(control.type)))return null;
-        const summary={productCode:'',productName:'',updatedAt:'',categoryLabel:''};
+        const summary={productCode:'',productName:'',updatedAt:'',categoryLabel:'',categoryCode:''};
         for(const table of tables){
           const fields=api.parseInventorySummary(table);
           for(const key of Object.keys(summary))if(!summary[key]&&fields[key])summary[key]=fields[key];
@@ -1269,13 +1552,6 @@ enum LegacySiteSupport {
         }
         scroll.appendChild(copy);panel.appendChild(scroll);return panel;
       };
-      const categoryFor=matrix=>{
-        const label=clean(matrix.product.categoryLabel),name=clean(matrix.product.productName);
-        if(/フットウェア|シューズ|footwear/i.test(label))return 'footwear';
-        if(matrix.sizeCodes.length&&matrix.sizeCodes.every(code=>/^3\d\d$/.test(code)))return 'footwear';
-        if(matrix.sizeCodes.length&&matrix.sizeCodes.every(code=>/^10[0-5]$/.test(code)))return /CAP|HAT|BEANIE|キャップ|ハット|ビーニー/i.test(name)?'headwear':'apparel';
-        return '';
-      };
       const addPager=(primary,view)=>{
         const doc=primary.doc;
         const original=doc.querySelector('select[name="PgSelect"]');
@@ -1321,7 +1597,7 @@ enum LegacySiteSupport {
           const api=primary.win.__y3InventoryPresentation;
           if(!api){invalidate();return false;}
           const summary={...pair.summary};
-          summary.categoryKey=categoryFor(matrix);
+          summary.categoryKey=api.resolveCategory(summary,matrix);
           const catalog=host.__y3InventorySizeCatalog;
           if(catalog)api.configureSizeMappings(catalog);
           const signature=JSON.stringify([summary,matrix]);

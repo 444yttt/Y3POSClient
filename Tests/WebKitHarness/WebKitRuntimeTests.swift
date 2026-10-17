@@ -278,6 +278,76 @@ final class WebKitRuntimeTests: XCTestCase {
     }
 
     @MainActor
+    func testPhotoGuideSizeMappingsAndUnitSwitchesPreserveMergedInventory() async throws {
+        let session = FixtureSession(path: "/scripts/verona/print/prtz011_2.asp")
+        defer { session.close() }
+        try await session.waitForLoad()
+        try await eventually(session.view, "!!frames[0]?.document.querySelector('[data-y3client-inventory]')")
+        let mappingsMatchGuide = try await session.view.evaluateJavaScript("""
+            (() => {
+              const api=frames[0].__y3InventoryPresentation;
+              if(!api)return false;
+              const matches=(code,category,unit,text)=>{
+                const value=api.formatSize(code,category,unit);
+                return value.confirmed===true && value.code===code && value.text===text;
+              };
+              const unconfirmed=(code,category,unit)=>{
+                const value=api.formatSize(code,category,unit);
+                return value.confirmed===false && value.code===code;
+              };
+              if(!matches('306','footwear','JP','22') || !matches('306','footwear','UK','3.5') ||
+                 !matches('306','footwear','US','4') || !matches('306','footwear','USW','5') ||
+                 !matches('306','footwear','EU','36'))return false;
+              if(!matches('324','footwear','JP','31') || !matches('324','footwear','UK','12.5') ||
+                 !matches('324','footwear','US','13') || !matches('324','footwear','EU','48') ||
+                 !unconfirmed('323','footwear','USW') || !unconfirmed('324','footwear','USW'))return false;
+              if(!matches('317','footwear','JP','27.5') || !matches('317','footwear','UK','9') ||
+                 !matches('317','footwear','US','9.5') || !matches('317','footwear','USW','10.5'))return false;
+              if(!unconfirmed('105','apparelWomen','JP') || !unconfirmed('100','apparelMen','JP') ||
+                 !matches('106','apparelMen','JP','2XL') || !matches('106','apparelUnisex','JP','2XL'))return false;
+              const sock=api.formatSize('608','socks');
+              if(!sock.confirmed || sock.text!=='26–28cm' || sock.measurement!=='EU 43–45' ||
+                 !matches('608','oneSize','JP','OSFA'))return false;
+              const matrix={product:{},sizeCodes:['608']};
+              return api.resolveCategory({categoryCode:'ACC',productName:'SOCKS'},matrix)==='socks' &&
+                api.resolveCategory({categoryCode:'ACC',productName:'ONE SIZE'},matrix)==='oneSize' &&
+                api.resolveCategory({categoryCode:'ACC',productName:'UNKNOWN'},matrix)==='' &&
+                api.resolveCategory({productName:'UNKNOWN'},matrix)==='';
+            })()
+            """) as? Bool
+        XCTAssertEqual(mappingsMatchGuide, true, "Photo guide mappings must preserve category boundaries and blank cells")
+        let unitsPreserveInventory = try await session.view.evaluateJavaScript("""
+            (() => {
+              const doc=frames[0].document;
+              const units=Array.from(doc.querySelectorAll('[data-y3client-size-unit]')).map(button=>button.getAttribute('data-y3client-size-unit'));
+              if(JSON.stringify(units)!==JSON.stringify(['JP','US','USW','UK','EU','CH']))return false;
+              const rows=()=>Array.from(doc.querySelectorAll('[data-y3client-inventory-size-row],[data-y3client-inventory-detail-row]'));
+              const quantities=()=>JSON.stringify(rows().map(row=>[
+                row.getAttribute('data-y3client-size-code'),
+                ...Array.from(row.cells).slice(1).map(cell=>cell.textContent)
+              ]));
+              const primaryCount=doc.querySelectorAll('[data-y3client-inventory-size-row]').length;
+              const detailCount=doc.querySelectorAll('[data-y3client-inventory-detail-row]').length;
+              if(primaryCount!==12 || detailCount!==12)return false;
+              const before=quantities();
+              for(const unit of ['UK','USW']){
+                doc.querySelector('[data-y3client-size-unit="'+unit+'"]').click();
+                if(doc.querySelector('[data-y3client-size-unit="'+unit+'"]').getAttribute('aria-pressed')!=='true' ||
+                   doc.querySelectorAll('[data-y3client-inventory-size-row]').length!==primaryCount ||
+                   doc.querySelectorAll('[data-y3client-inventory-detail-row]').length!==detailCount ||
+                   quantities()!==before)return false;
+                const size=doc.querySelector('[data-y3client-color-code="-4-"] [data-y3client-inventory-size-row][data-y3client-size-code="317"] td');
+                if(size?.firstChild?.textContent.trim()!==(unit==='UK'?'UK 9':'US W 10.5'))return false;
+              }
+              return true;
+            })()
+            """) as? Bool
+        XCTAssertEqual(unitsPreserveInventory, true, "Six unit choices must preserve size rows and primary/detail quantities")
+        XCTAssertEqual(session.observer.failures, [])
+        XCTAssertEqual(session.observer.scriptErrors, [])
+    }
+
+    @MainActor
     func testIsolatedStaffArgumentsStayInMatchingMainDocumentWithoutSubmit() async throws {
         let path = "/verona/data/cmtz030.asp?r_shop_code=FICTIONAL&r_shop_pw=FICTIONAL&r_pos_no=0"
         let session = FixtureSession(path: path)

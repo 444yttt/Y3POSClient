@@ -47,12 +47,12 @@ const transposedRows = (size, index) => metrics.map((metric, metricIndex) => {
   const value = [String(index), '', '-', '-1'][metricIndex];
   return `<tr>${metricIndex === 0 ? `<td rowspan="4">${size}</td>` : ''}<td>${metric.label}</td><td>${index}${metricIndex}</td><td>${value}</td>${'<td></td>'.repeat(9)}</tr>`;
 }).join('');
-const transposed = () => `<div id="D_T01_H"><table id="T01_H" width="1200" style="width:625px;position:absolute;left:0;top:0"><tbody>
-<tr><th>品番</th><td>MOCK-F001</td><th>商品名</th><td colspan="10"><a id="transposed-product-link" href="javascript:void(0)" onclick="window.fixtureTransposedClicks=(window.fixtureTransposedClicks||0)+1;return false">架空のシューズ</a></td></tr>
+const transposed = ({ sizeCodes = rowSizes, productName = '架空のシューズ' } = {}) => `<div id="D_T01_H"><table id="T01_H" width="1200" style="width:625px;position:absolute;left:0;top:0"><tbody>
+<tr><th>品番</th><td>MOCK-F001</td><th>商品名</th><td colspan="10"><a id="transposed-product-link" href="javascript:void(0)" onclick="window.fixtureTransposedClicks=(window.fixtureTransposedClicks||0)+1;return false">${productName}</a></td></tr>
 <tr><th rowspan="2">サイズ</th><th rowspan="2"></th><th rowspan="2">合計</th><th colspan="10">カラー</th></tr>
 <tr><th>-4-</th>${'<th></th>'.repeat(9)}</tr>
-${rowSizes.map(transposedRows).join('')}${transposedRows('総計', 9)}</tbody></table></div>
-<div id="D_T01_B"><table id="T01_B" width="1200"><tbody>${rowSizes.map(transposedRows).join('')}${transposedRows('総計', 9)}</tbody></table></div>`;
+${sizeCodes.map(transposedRows).join('')}${transposedRows('総計', 9)}</tbody></table></div>
+<div id="D_T01_B"><table id="T01_B" width="1200"><tbody>${sizeCodes.map(transposedRows).join('')}${transposedRows('総計', 9)}</tbody></table></div>`;
 const fixturePaths = {
   full: '/scripts/verona/print/prtz011_4.asp',
   summary: '/scripts/verona/print/prtz011_3.asp',
@@ -84,6 +84,11 @@ const inventoryFamilies = [
   { key: 'display015', directory: 'display', family: '015', metadataSuffix: '3', matrixSuffix: '2', reverse: false, duplicateFullGrid: true },
   { key: 'display015-structural', directory: 'display', family: '015', metadataSuffix: '5', matrixSuffix: '7', reverse: true, navigation: true, lateGrid: true },
   { key: 'print010-mismatch', directory: 'print', family: '010', metadataSuffix: '3', matrixSuffix: '2', reverse: true, mismatched: true },
+  { key: 'guide-women', directory: 'print', family: '015', metadataSuffix: '5', matrixSuffix: '7', reverse: true, categoryCode: '1APW', expectedCategory: 'apparelWomen', sizeCodes: ['100', '101', '102', '103', '104'], productName: '架空のウェア', expectedSizeTexts: ['2XS', 'XS', 'S', 'M', 'L'] },
+  { key: 'guide-headwear', directory: 'display', family: '015', metadataSuffix: '5', matrixSuffix: '7', reverse: false, categoryCode: '3ACC', expectedCategory: 'headwear', sizeCodes: ['102', '103', '104'], productName: '架空のHAT', expectedSizeTexts: ['S', 'M', 'L'], expectedMeasures: ['56', '58', '60'] },
+  { key: 'guide-socks', directory: 'print', family: '010', metadataSuffix: '5', matrixSuffix: '7', reverse: true, categoryCode: '3ACC', expectedCategory: 'socks', sizeCodes: ['605', '606', '607', '608'], productName: '架空のSOCKS', expectedSizeTexts: ['21-22cm', '22-24cm', '24-26cm', '26-28cm'] },
+  { key: 'guide-one-size', directory: 'print', family: '015', metadataSuffix: '5', matrixSuffix: '7', reverse: false, categoryCode: '3ACC', expectedCategory: 'oneSize', sizeCodes: ['601', '608'], productName: '架空のONE SIZE BAG', expectedSizeTexts: ['NS', 'OSFA'] },
+  { key: 'guide-unknown-608', directory: 'display', family: '015', metadataSuffix: '5', matrixSuffix: '7', reverse: true, categoryCode: '3ACC', expectedCategory: '', sizeCodes: ['608'], productName: '架空のバッグ', expectedSizeTexts: ['608'] },
 ];
 for (const item of inventoryFamilies) {
   const base = `/scripts/verona/${item.directory}/prtz${item.family}`;
@@ -99,8 +104,10 @@ for (const item of inventoryFamilies) {
   if (item.reverse) pair.reverse();
   if (item.navigation) pair.unshift(`<frame name="inventory-navigation" src="${item.navigationPath}">`);
   fixtures.set(origin + item.root, `<html><head><title>架空の在庫ファミリー確認</title></head><frameset rows="${item.navigation ? '60,110,*' : '110,*'}">${pair.join('')}</frameset></html>`);
-  fixtures.set(origin + item.metadata, shell(metadata('MOCK-F001')));
-  let grid = transposed();
+  let summaryHTML = metadata('MOCK-F001');
+  if (item.categoryCode) summaryHTML = summaryHTML.replace('<th>作成日付</th>', '<th>作成日付</th><th>カテゴリーNo</th>').replace(`<td>${updatedAt}</td>`, `<td>${updatedAt}</td><td>${item.categoryCode}</td>`);
+  fixtures.set(origin + item.metadata, shell(summaryHTML));
+  let grid = transposed({ sizeCodes: item.sizeCodes, productName: item.productName });
   if (item.duplicateFullGrid) {
     const fullHeader = grid.match(/<table id="T01_H"[\s\S]*?<\/table>/)[0];
     grid = grid.replace(/<table id="T01_B"[\s\S]*?<\/table>/, fullHeader.replace('id="T01_H"', 'id="T01_B"'));
@@ -308,9 +315,23 @@ async function checkInventoryFamilies(browser) {
       assert.equal(await metadataFrame.locator('[data-y3client-inventory-primary]').count(), 1);
       assert.equal(await matrixFrame.locator('[data-y3client-inventory-secondary]').count(), 1);
       assert.equal(await metadataFrame.locator('[data-y3client-result-card]').count(), 0, `${item.key}: metadata must not become a false product/timestamp card`);
-      assert.equal(await metadataFrame.locator('[data-y3client-inventory-size-row]').count(), rowSizes.length * 2);
+      assert.equal(await metadataFrame.locator('[data-y3client-inventory-size-row]').count(), (item.sizeCodes || rowSizes).length * 2);
       assert.equal(await metadataFrame.locator('#inventory-summary').count(), 1);
       assert.equal(await matrixFrame.locator('#T01_H,#T01_B').count(), 2);
+      if (item.categoryCode) {
+        const resolved = await metadataFrame.evaluate(() => {
+          const api = window.__y3InventoryPresentation;
+          const summary = api.parseInventorySummary(document.getElementById('inventory-summary'));
+          const source = Array.from(top.frames).find(frame => frame.document.getElementById('T01_H'));
+          return api.resolveCategory(summary, api.parseInventoryTable(source.document.getElementById('T01_H')));
+        });
+        assert.equal(resolved, item.expectedCategory, `${item.key}: metadata-only category must reach the inventory resolver`);
+        const cells = await metadataFrame.locator('[data-y3client-color-code="-4-"] [data-y3client-inventory-size-row] td:first-child').allTextContents();
+        const normalized = cells.map(value => value.replace(/[–—−]/g, '-').replace(/\s+/g, ''));
+        item.expectedSizeTexts.forEach((expected, index) => assert(normalized[index].includes(expected), `${item.key}: category-specific size label must appear`));
+        if (item.expectedMeasures) item.expectedMeasures.forEach((expected, index) => assert(normalized[index].includes(expected), 'Confirmed hat circumference must appear beside its label'));
+        if (item.expectedCategory === '') assert(!cells.join(' ').includes('OSFA') && !cells.join(' ').includes('26–28'), 'Unknown code608 must not borrow one-size or sock labels');
+      }
       if (item.navigation) {
         await metadataFrame.getByRole('button', { name: '検索条件を変更', exact: true }).click();
         const navigation = page.frames().find(frame => frame.url() === origin + item.navigationPath);
@@ -346,6 +367,131 @@ async function checkInventoryFamilies(browser) {
   assert.equal(await dailyFrame.locator('#daily-complex').isVisible(), true, 'Original daily complex table must remain available');
   await context.close();
   return reports;
+}
+
+async function checkSizeGuide(browser) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const unknown = [];
+  await context.route('**/*', async route => {
+    const body = fixtures.get(route.request().url());
+    if (body === undefined) { unknown.push(route.request().url()); await route.abort(); return; }
+    await route.fulfill({ contentType: 'text/html; charset=utf-8', body });
+  });
+  const page = await context.newPage();
+  await page.goto(origin + fixturePaths.full);
+  await snapshotOriginals(page);
+  await page.evaluate(adapt);
+  const codes = Array.from({ length: 19 }, (_, index) => String(306 + index));
+  const expected = {
+    JP: Array.from({ length: 19 }, (_, index) => 22 + index * 0.5),
+    UK: Array.from({ length: 19 }, (_, index) => 3.5 + index * 0.5),
+    US: Array.from({ length: 19 }, (_, index) => 4 + index * 0.5),
+    USW: Array.from({ length: 17 }, (_, index) => 5 + index * 0.5),
+    EU: ['36', '36 2/3', '37 1/3', '38', '38 2/3', '39 1/3', '40', '40 2/3', '41 1/3', '42', '42 2/3', '43 1/3', '44', '44 2/3', '45 1/3', '46', '46 2/3', '47 1/3', '48'],
+  };
+  const mapped = await page.evaluate(codes => {
+    const api = window.__y3InventoryPresentation;
+    return Object.fromEntries(['JP', 'UK', 'US', 'USW', 'EU', 'CH'].map(unit => [unit, codes.map(code => api.formatSize(code, 'footwear', unit))]));
+  }, codes);
+  for (const unit of ['JP', 'UK', 'US', 'USW']) {
+    for (let index = 0; index < expected[unit].length; index++) {
+      assert.equal(mapped[unit][index].confirmed, true, `Guide code ${codes[index]} must have a confirmed ${unit} size`);
+      assert.equal(Number(mapped[unit][index].text), expected[unit][index]);
+    }
+  }
+  assert.deepEqual(mapped.EU.map(value => value.text), expected.EU, 'Fractional EU sizes must follow every guide row');
+  for (const index of [17, 18]) {
+    assert.equal(mapped.USW[index].confirmed, false, 'Blank women sizes in the guide must remain unconfirmed');
+    assert.equal(mapped.USW[index].code, codes[index]);
+  }
+  assert.equal(mapped.CH[0].confirmed, false, 'Missing CH must not be inferred from the new JP rows');
+  assert.equal(mapped.CH[11].text, '265', 'The existing referenced CH size for code317 must remain unchanged');
+  const domain = await page.evaluate(() => {
+    const api = window.__y3InventoryPresentation;
+    const format = (code, category) => api.formatSize(code, category, 'JP');
+    const categoryCodes = ['100', '101', '102', '103', '104', '105', '106'];
+    return {
+      generic: categoryCodes.map(code => format(code, 'apparel')),
+      women: categoryCodes.map(code => format(code, 'apparelWomen')),
+      men: categoryCodes.map(code => format(code, 'apparelMen')),
+      unisex: categoryCodes.map(code => format(code, 'apparelUnisex')),
+      hats: ['100', '101', '102', '103', '104', '105'].map(code => format(code, 'headwear')),
+      socks: ['605', '606', '607', '608'].map(code => format(code, 'socks')),
+      oneSize: ['601', '608'].map(code => format(code, 'oneSize')),
+      unknown: format('608', 'unmapped-category'),
+    };
+  });
+  const clothing = ['2XS', 'XS', 'S', 'M', 'L', 'XL', '2XL'];
+  assert.deepEqual(domain.generic.map(size => size.text), clothing);
+  assert.deepEqual(domain.unisex.map(size => size.text), clothing);
+  assert.deepEqual(domain.women.slice(0, 5).map(size => size.text), clothing.slice(0, 5));
+  assert.equal(domain.women[5].confirmed, false);
+  assert.deepEqual(domain.men.slice(1).map(size => size.text), clothing.slice(1));
+  assert.equal(domain.men[0].confirmed, false);
+  assert.deepEqual(domain.hats.map(size => size.text), clothing.slice(0, 6), 'Previous confirmed hat labels must be preserved');
+  assert.deepEqual(domain.hats.slice(2, 5).map(size => size.measurement), ['頭囲 56cm', '頭囲 58cm', '頭囲 60cm']);
+  assert(domain.hats.slice(0, 2).concat(domain.hats[5]).every(size => !size.measurement), 'Unspecified hat circumferences must not be invented');
+  assert.deepEqual(domain.socks.map(size => size.text), ['21–22cm', '22–24cm', '24–26cm', '26–28cm']);
+  assert.deepEqual(domain.socks.map(size => size.measurement), ['EU 34–36', 'EU 37–39', 'EU 40–42', 'EU 43–45']);
+  assert.deepEqual(domain.oneSize.map(size => size.text), ['NS', 'OSFA']);
+  assert.equal(domain.unknown.confirmed, false);
+  assert.equal(domain.unknown.text, '608', 'Code608 requires category context');
+  const resolved = await page.evaluate(() => {
+    const api = window.__y3InventoryPresentation;
+    const model = (productName = '架空の商品', sizeCodes = ['101'], categoryCode = '') => ({ product: { productName, categoryCode }, sizeCodes });
+    return {
+      women: api.resolveCategory({ categoryCode: '1APW' }, model()),
+      men: api.resolveCategory({ categoryCode: '2APM' }, model()),
+      footwear: api.resolveCategory({ categoryCode: '4FTW' }, model('架空の商品', ['317'])),
+      unisex: api.resolveCategory({ categoryCode: '5APU' }, model()),
+      socks: api.resolveCategory({ categoryCode: '3ACC' }, model('架空のSOCKS', ['605', '608'])),
+      headwear: api.resolveCategory({ categoryCode: '3ACC' }, model('架空のHAT', ['102', '104'])),
+      oneSize: api.resolveCategory({ categoryCode: '3ACC' }, model('架空のONE SIZE BAG', ['601', '608'])),
+      unknown608: api.resolveCategory({}, model('架空の商品', ['608'])),
+      genericACC: api.resolveCategory({ categoryCode: '3ACC' }, model('架空のバッグ', ['608'])),
+      conflict: api.resolveCategory({ categoryCode: '1APW' }, model('架空の商品', ['101'], '2APM')),
+      explicitOverName: api.resolveCategory({ categoryCode: '1APW' }, model('架空のMEN SHIRT', ['101'])),
+      capOneSize: api.resolveCategory({ categoryCode: '3ACC' }, model('架空のCAP ONE SIZE', ['608'])),
+      socksOneSize: api.resolveCategory({ categoryCode: '3ACC' }, model('架空のSOCKS ONE SIZE', ['608'])),
+      accessoryNS: api.resolveCategory({ categoryCode: '3ACC' }, model('架空のバッグ', ['601'])),
+    };
+  });
+  assert.deepEqual(resolved, { women: 'apparelWomen', men: 'apparelMen', footwear: 'footwear', unisex: 'apparelUnisex', socks: 'socks', headwear: 'headwear', oneSize: 'oneSize', unknown608: '', genericACC: '', conflict: '', explicitOverName: 'apparelWomen', capOneSize: 'oneSize', socksOneSize: 'socks', accessoryNS: 'oneSize' });
+  const aliases = ['カテゴリNo', 'カテゴリーNo', 'カテゴリ番号', 'カテゴリー番号', 'カテゴリーＮＯ'];
+  const summaries = await page.evaluate(aliases => {
+    const api = window.__y3InventoryPresentation;
+    return aliases.map(alias => {
+      const table = document.createElement('table');
+      table.innerHTML = `<tr><th>品番</th><th>作成日付</th><th>${alias}</th></tr><tr><td>MOCK-GUIDE</td><td>2026/10/17 17:34:46 現在</td><td>1APW</td></tr>`;
+      return api.parseInventorySummary(table);
+    });
+  }, aliases);
+  summaries.forEach(summary => assert.equal(summary.categoryCode, '1APW', 'Category-number aliases must survive metadata parsing'));
+  await page.evaluate(codes => {
+    const api = window.__y3InventoryPresentation;
+    const matrix = api.parseInventoryTable(document.getElementById('inventory-matrix'));
+    matrix.sizeCodes = codes;
+    matrix.colors = matrix.colors.slice(0, 1);
+    const raw = ['0', '', '-', '-1', '003'];
+    for (const metric of Object.values(matrix.colors[0].metrics)) metric.values = codes.map((_, index) => raw[index % raw.length]);
+    const summary = api.parseInventorySummary(document.getElementById('inventory-summary'));
+    summary.categoryKey = 'footwear';
+    api.renderInventory(summary, matrix, document.getElementById('combined-target'));
+  }, codes);
+  assert.deepEqual((await page.locator('[data-y3client-size-unit]').evaluateAll(buttons => buttons.map(button => button.getAttribute('data-y3client-size-unit')))).sort(), ['CH', 'EU', 'JP', 'UK', 'US', 'USW']);
+  const totalsBefore = await page.locator('[data-y3client-inventory-totals]').allTextContents();
+  for (const unit of ['JP', 'UK', 'US', 'USW', 'EU', 'CH']) {
+    await page.locator(`[data-y3client-size-unit="${unit}"]`).click();
+    const rows = await page.locator('[data-y3client-inventory-size-row]').evaluateAll(rows => rows.map(row => Array.from(row.cells).map(cell => cell.textContent)));
+    assert.equal(rows.length, 19);
+    rows.forEach((cells, index) => assert.deepEqual(cells.slice(1), [['0', '', '-', '-1', '003'][index % 5] || '\u00a0', ['0', '', '-', '-1', '003'][index % 5] || '\u00a0'], 'Every new unit must preserve raw stock and sales cells'));
+    assert.deepEqual(await page.locator('[data-y3client-inventory-totals]').allTextContents(), totalsBefore, 'Unit changes must not alter supplied totals');
+    await assertFits(page, 390);
+  }
+  await assertPreserved(page);
+  assert.equal(unknown.length, 0);
+  await context.close();
+  return { footwearGuideRows: 19, footwearUnits: 6, categoryScopedCodes: true, metadataAliases: aliases.length, stockValuesPreserved: true };
 }
 
 async function checkStaffAutofill(browser) {
@@ -416,6 +562,10 @@ async function main() {
   const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE || '/usr/bin/chromium', args: ['--no-sandbox'] });
   const reports = [];
   try {
+    if (process.env.INVENTORY_GUIDE_ONLY === '1') {
+      console.log(JSON.stringify({ guide: await checkSizeGuide(browser) }, null, 2));
+      return;
+    }
     if (process.env.INVENTORY_FAMILY_ONLY === '1') {
       console.log(JSON.stringify({ families: await checkInventoryFamilies(browser) }, null, 2));
       return;
@@ -600,8 +750,9 @@ async function main() {
     if (!standalone) await checkCombinedInventory(context);
     await context.close();
     const families = standalone ? [] : await checkInventoryFamilies(browser);
+    const guide = standalone ? null : await checkSizeGuide(browser);
     const login = await checkStaffAutofill(browser);
-    console.log(JSON.stringify({ inventoryFeatures: reports, transposedMatrix: true, combinedFrames: !standalone, families, nonInventoryReportsPreserved: !standalone, untrustedOriginUntouched: true, login, screenshots: output }, null, 2));
+    console.log(JSON.stringify({ inventoryFeatures: reports, transposedMatrix: true, combinedFrames: !standalone, families, guide, nonInventoryReportsPreserved: !standalone, untrustedOriginUntouched: true, login, screenshots: output }, null, 2));
   } finally { await browser.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
