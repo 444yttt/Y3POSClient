@@ -46,6 +46,9 @@ final class BrowserModel: NSObject, ObservableObject {
     @Published private(set) var loginURLText = ""
     @Published private(set) var connectionStoreLoading = false
     @Published private(set) var connectionStoreError: String?
+    @Published private(set) var hasSavedStaffCredentials = false
+    @Published private(set) var staffCredentialStoreLoading = false
+    @Published private(set) var staffCredentialStoreError: String?
     @Published var sheet: ClientSheet?
     @Published private(set) var isResetting = false
     @Published var showResetConfirmation = false
@@ -75,6 +78,8 @@ final class BrowserModel: NSObject, ObservableObject {
     private var pendingResultFocus: [ObjectIdentifier: PendingResultFocus] = [:]
     private var dialogs: [QueuedDialog] = []
     private var presentingDialog: QueuedDialog?
+    private var staffCredentialGeneration = 0
+    private var staffAutofillTask: Task<Void, Never>?
 
     private struct PendingResultFocus {
         let submission: Int
@@ -111,6 +116,10 @@ final class BrowserModel: NSObject, ObservableObject {
         }
         if !controller.userScripts.contains(where: { $0.source == LegacySiteSupport.mobileRedesign }) {
             controller.addUserScript(WKUserScript(source: LegacySiteSupport.mobileRedesign,
+                injectionTime: .atDocumentEnd, forMainFrameOnly: false))
+        }
+        if !controller.userScripts.contains(where: { $0.source == LegacySiteSupport.inventoryPresentation }) {
+            controller.addUserScript(WKUserScript(source: LegacySiteSupport.inventoryPresentation,
                 injectionTime: .atDocumentEnd, forMainFrameOnly: false))
         }
         view.navigationDelegate = self
@@ -213,6 +222,9 @@ final class BrowserModel: NSObject, ObservableObject {
                 loginURLText = saved
                 UserDefaults.standard.removeObject(forKey: "loginURL")
             } else {
+                invalidateStaffAutofill()
+                try await KeychainStore.shared.removeStaffCredentials()
+                hasSavedStaffCredentials = false
                 if saved != nil { try await KeychainStore.shared.remove() }
                 if let previous = UserDefaults.standard.string(forKey: "loginURL"),
                    URLPolicy.loginURL(from: previous) != nil {
@@ -244,8 +256,133 @@ final class BrowserModel: NSObject, ObservableObject {
         else if !initialConnectionOpened { login() }
     }
 
+    func refreshStaffCredentialStatus() async {
+        guard !staffCredentialStoreLoading else { return }
+        let connection = loginURLText
+        let generation = staffCredentialGeneration
+        staffCredentialStoreLoading = true
+        defer { staffCredentialStoreLoading = false }
+        do {
+            let saved = try await KeychainStore.shared.readStaffCredentials(for: connection)
+            guard generation == staffCredentialGeneration, connection == loginURLText else { return }
+            hasSavedStaffCredentials = saved != nil
+            staffCredentialStoreError = nil
+        } catch {
+            hasSavedStaffCredentials = false
+            staffCredentialStoreError = "スタッフ情報を確認できませんでした。\(error.localizedDescription)"
+        }
+    }
+
+    private func invalidateStaffAutofill() {
+        staffCredentialGeneration += 1
+        staffAutofillTask?.cancel()
+        staffAutofillTask = nil
+    }
+
+    func saveConnectionSettings(_ text: String, staffAutofillEnabled: Bool,
+                                staffID: String, password: String) async -> String? {
+        guard !connectionStoreLoading && !staffCredentialStoreLoading && !isResetting else {
+            return "処理が終わってからお試しください。"
+        }
+        let replacement = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let connection = replacement.isEmpty ? loginURLText : replacement
+        guard URLPolicy.loginURL(from: connection) != nil else {
+            return connection.isEmpty ? "ログイン開始URLを入力してください。" : "\(URLPolicy.origin) 内のログインURLを指定してください。"
+        }
+        let changed = connection != loginURLText
+        connectionStoreLoading = true
+        staffCredentialStoreLoading = true
+        defer { connectionStoreLoading = false; staffCredentialStoreLoading = false }
+        do {
+            let suppliedID = staffID.trimmingCharacters(in: .whitespacesAndNewlines)
+            var credentials: StoredStaffCredentials?
+            if staffAutofillEnabled {
+                var existing: StoredStaffCredentials?
+                if !changed && (suppliedID.isEmpty || password.isEmpty) {
+                    existing = try await KeychainStore.shared.readStaffCredentials(for: connection)
+                }
+                let resolvedID = suppliedID.isEmpty ? existing?.staffID ?? "" : suppliedID
+                let resolvedPassword = password.isEmpty ? existing?.password ?? "" : password
+                guard !resolvedID.isEmpty && !resolvedPassword.isEmpty else {
+                    return changed ? "接続先を変更する場合は、スタッフIDとパスワードを両方入力してください。" : "スタッフIDとパスワードを入力してください。"
+                }
+                credentials = StoredStaffCredentials(connectionURL: connection,
+                    staffID: resolvedID, password: resolvedPassword)
+            }
+            invalidateStaffAutofill()
+            if changed || !staffAutofillEnabled {
+                try await KeychainStore.shared.removeStaffCredentials()
+                hasSavedStaffCredentials = false
+            }
+            try await KeychainStore.shared.save(connection)
+            loginURLText = connection
+            connectionRestored = true
+            connectionRetryNeeded = false
+            UserDefaults.standard.removeObject(forKey: "loginURL")
+            if let credentials {
+                try await KeychainStore.shared.saveStaffCredentials(credentials)
+                hasSavedStaffCredentials = true
+            }
+            connectionStoreError = nil
+            staffCredentialStoreError = nil
+            return nil
+        } catch {
+            // Separate Keychain writes can fail independently; never reuse an old scope.
+            hasSavedStaffCredentials = (try? await KeychainStore.shared.readStaffCredentials(for: loginURLText)) != nil
+            let message = "接続設定・スタッフ情報を保存できませんでした。\(error.localizedDescription)"
+            staffCredentialStoreError = message
+            return message
+        }
+    }
+
+    func removeSavedStaffCredentials() async -> String? {
+        guard !connectionStoreLoading && !staffCredentialStoreLoading && !isResetting else {
+            return "処理が終わってからお試しください。"
+        }
+        staffCredentialStoreLoading = true
+        defer { staffCredentialStoreLoading = false }
+        invalidateStaffAutofill()
+        do {
+            try await KeychainStore.shared.removeStaffCredentials()
+            hasSavedStaffCredentials = false
+            staffCredentialStoreError = nil
+            return nil
+        } catch {
+            let message = "スタッフ情報を削除できませんでした。\(error.localizedDescription)"
+            staffCredentialStoreError = message
+            return message
+        }
+    }
+
+    private func fillSavedStaffCredentials(in view: WKWebView) {
+        let connection = loginURLText
+        guard view === webView, !isResetting,
+              let currentURL = view.url, URLPolicy.isTrusted(currentURL),
+              currentURL.path == "/verona/data/cmtz030.asp",
+              currentURL.absoluteString == URLPolicy.loginURL(from: connection)?.absoluteString else { return }
+        let generation = staffCredentialGeneration
+        staffAutofillTask?.cancel()
+        staffAutofillTask = Task { @MainActor [weak self, weak view] in
+            guard let self, let view else { return }
+            do {
+                guard let saved = try await KeychainStore.shared.readStaffCredentials(for: connection),
+                      !Task.isCancelled, generation == self.staffCredentialGeneration,
+                      connection == self.loginURLText, !self.isResetting,
+                      view.url == currentURL, view === self.webView else { return }
+                _ = try? await view.callAsyncJavaScript(LegacySiteSupport.staffCredentialAutofill,
+                    arguments: ["staffID": saved.staffID, "password": saved.password,
+                                "documentURL": currentURL.absoluteString],
+                    in: nil, contentWorld: .defaultClient)
+            } catch {
+                guard !Task.isCancelled, generation == self.staffCredentialGeneration,
+                      connection == self.loginURLText, view.url == currentURL else { return }
+                self.staffCredentialStoreError = "スタッフ情報を自動入力できませんでした。iPhoneのロックを解除し、設定から再試行してください。"
+            }
+        }
+    }
+
     func saveLoginURL(_ text: String) async -> String? {
-        guard !connectionStoreLoading && !isResetting else { return "処理が終わってからお試しください。" }
+        guard !connectionStoreLoading && !staffCredentialStoreLoading && !isResetting else { return "処理が終わってからお試しください。" }
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if value.isEmpty {
             if connectionRestored && hasSavedConnection { return nil }
@@ -257,6 +394,11 @@ final class BrowserModel: NSObject, ObservableObject {
         connectionStoreLoading = true
         defer { connectionStoreLoading = false }
         do {
+            if value != loginURLText {
+                invalidateStaffAutofill()
+                try await KeychainStore.shared.removeStaffCredentials()
+                hasSavedStaffCredentials = false
+            }
             try await KeychainStore.shared.save(value)
             loginURLText = value
             connectionRestored = true
@@ -273,10 +415,14 @@ final class BrowserModel: NSObject, ObservableObject {
     }
 
     func removeSavedConnection() async -> String? {
-        guard !connectionStoreLoading && !isResetting else { return "処理が終わってからお試しください。" }
+        guard !connectionStoreLoading && !staffCredentialStoreLoading && !isResetting else { return "処理が終わってからお試しください。" }
         connectionStoreLoading = true
         defer { connectionStoreLoading = false }
         do {
+            invalidateStaffAutofill()
+            try await KeychainStore.shared.removeStaffCredentials()
+            hasSavedStaffCredentials = false
+            staffCredentialStoreError = nil
             try await KeychainStore.shared.remove()
             UserDefaults.standard.removeObject(forKey: "loginURL")
             loginURLText = ""
@@ -303,6 +449,7 @@ final class BrowserModel: NSObject, ObservableObject {
 
     func resetSession() {
         guard !isResetting else { return }
+        invalidateStaffAutofill()
         isResetting = true
         closeAllPopups()
         cancelDialogs(for: webView)
@@ -727,6 +874,7 @@ extension BrowserModel: WKNavigationDelegate {
         refreshState()
         resumeDialogs()
         scheduleFrameDiscovery(in: webView)
+        fillSavedStaffCredentials(in: webView)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { failed(webView, error: error) }

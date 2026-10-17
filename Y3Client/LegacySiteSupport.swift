@@ -9,6 +9,31 @@ struct FramePane: Identifiable {
 }
 
 enum LegacySiteSupport {
+    // Called only for the saved main-frame login URL, with values passed as WK arguments.
+    // No automatic submit, page-world credentials bridge, or credential-bearing source.
+    static let staffCredentialAutofill = #"""
+    'use strict';
+    const origin = 'https://adidas-y3.poscmcloud.jp:15505';
+    if (location.origin !== origin || location.href !== documentURL ||
+        location.pathname !== '/verona/data/cmtz030.asp' || window.top !== window ||
+        typeof staffID !== 'string' || !staffID || typeof password !== 'string' || !password) return false;
+    const ids = document.querySelectorAll('input[name="tanto_id"]');
+    const passwords = document.querySelectorAll('input[name="tanto_pw"]');
+    if (ids.length !== 1 || passwords.length !== 1) return false;
+    const id = ids[0], pw = passwords[0], form = id.form;
+    if (!form || pw.form !== form || form.method.toLowerCase() !== 'post' ||
+        id.type !== 'text' || pw.type !== 'password' ||
+        id.disabled || id.readOnly || pw.disabled || pw.readOnly ||
+        !id.getClientRects().length || !pw.getClientRects().length) return false;
+    const action = new URL(form.action || location.href, document.baseURI);
+    if (action.origin !== origin || action.username || action.password) return false;
+    if ((id.value && id.value !== staffID) || pw.value) return false;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(id, staffID);
+    setter.call(pw, password);
+    return true;
+    """#
+
     // Structural counters only. No field values or report contents leave the web document.
     static let navigationState = #"""
     (() => {
@@ -424,6 +449,7 @@ enum LegacySiteSupport {
       const root = document.documentElement;
       const reportPage = /\/scripts\/verona\/(?:print|display|dwh)\/(?:prtz|dstz|help_)/i.test(location.pathname);
       if (!reportPage) return;
+      if (/\/prtz011_2_3\.asp$/i.test(location.pathname)) return;
       // Legacy Tscroller builds the paired header/body tables in its load handler.
       if (document.readyState !== 'complete') { window.addEventListener('load', adaptResults, { once:true }); return; }
       root.setAttribute('data-y3client-redesign', '');
@@ -475,7 +501,7 @@ enum LegacySiteSupport {
         }
         return text.replace(/\s+/g,' ').trim().slice(0,60);
       };
-      const isData = table => table.rows.length >= 2 && !table.closest('[data-y3client-search-table],[data-y3client-menu-table]') && !visibleControls(table) && !table.querySelector('table');
+      const isData = table => table.rows.length >= 2 && !table.closest('[data-y3client-search-table],[data-y3client-menu-table],[data-y3client-inventory],[data-y3client-inventory-view]') && !visibleControls(table) && !table.querySelector('table');
       for (const table of Array.from(document.querySelectorAll('table'))) {
         if (!isData(table) || table.hasAttribute('data-y3client-result-list') || table.closest('[data-y3client-table-scroll]')) continue;
         const container=table.parentElement;
@@ -563,10 +589,676 @@ enum LegacySiteSupport {
         const original=HTMLFormElement.prototype.submit;
         HTMLFormElement.prototype.submit=function(...args){mark(this);return original.apply(this,args);};
       }
-      if(window!==host && readOnlyPage && !searchForms.length && (document.querySelector('table') || /\/prtz\d+_(?:[2-9]|[2-9]_[2-9])\.asp$/i.test(path))) {
+      if(window!==host && readOnlyPage && !/\/prtz011_2_[123]\.asp$/i.test(path) && !searchForms.length && (document.querySelector('table') || /\/prtz\d+_(?:[2-9]|[2-9]_[2-9])\.asp$/i.test(path))) {
         const ready=()=>{state.resultSubmissionRevision=state.submissionRevision || 0;};
         if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',ready,{once:true});else ready();
       }
+    })();
+    """#
+
+    // Read-only inventory rendering stays inside the same-origin web documents.
+    static let inventoryPresentation = #"""
+    (() => {
+      'use strict';
+      const ORIGIN = 'https://adidas-y3.poscmcloud.jp:15505';
+      if (location.origin !== ORIGIN || !/^\/scripts\/verona\/(?:display|dwh|print)\/prtz011(?:_\d+)*\.asp$/i.test(location.pathname)) return;
+      if (window.__y3InventoryPresentation?.version === 1) return;
+      const MAX_ROWS = 512;
+      const MAX_COLUMNS = 128;
+      const own = (object, key) => Object.prototype.hasOwnProperty.call(object || {}, key);
+      const clean = value => String(value ?? '').replace(/\s+/g, ' ').trim();
+      const keyText = value => clean(value).normalize('NFKC').replace(/[\s:：]/g, '');
+      const metrics = [
+        { key: 'available', label: '有効在庫' },
+        { key: 'inTransit', label: '積送在庫' },
+        { key: 'reserved', label: '取置在庫' },
+        { key: 'sales', label: '販売実績' },
+      ];
+      const metricKey = value => metrics.find(metric => metric.label === keyText(value))?.key || null;
+      const catalogs = Object.create(null);
+      const containerState = new WeakMap();
+
+      // These two code/category relationships were supplied by the user. Nothing is extrapolated.
+      catalogs.footwear = { kind: 'footwear', title: 'シューズ', codes: Object.assign(Object.create(null), { '317': { JP: '27.5' } }) };
+      catalogs.apparel = { kind: 'apparel', title: 'ウェア', codes: Object.assign(Object.create(null), { '101': { label: 'XS' } }) };
+
+      const nodeText = element => {
+        const document = element.ownerDocument;
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        let result = '', node;
+        while ((node = walker.nextNode())) {
+          if (!node.parentElement?.closest('script,style,select,textarea')) result += ' ' + node.textContent;
+        }
+        return clean(result);
+      };
+
+      const tableRows = table => {
+        if (!table || table.tagName !== 'TABLE') return [];
+        return Array.from(table.rows).filter(row => row.closest('table') === table);
+      };
+
+      function expandTable(table) {
+        const rows = tableRows(table);
+        if (!rows.length || rows.length > MAX_ROWS) return null;
+        const grid = Array.from({ length: rows.length }, () => []);
+        for (let r = 0; r < rows.length; r++) {
+          let column = 0;
+          for (const cell of Array.from(rows[r].cells)) {
+            while (grid[r][column]) column++;
+            const width = Number(cell.colSpan) || 1;
+            const height = cell.rowSpan === 0 ? rows.length - r : (Number(cell.rowSpan) || 1);
+            if (width < 1 || height < 1 || column + width > MAX_COLUMNS || r + height > rows.length) return null;
+            const record = { text: nodeText(cell), row: r, column, width, height };
+            for (let rr = r; rr < r + height; rr++) {
+              for (let cc = column; cc < column + width; cc++) {
+                if (grid[rr][cc]) return null;
+                grid[rr][cc] = record;
+              }
+            }
+            column += width;
+          }
+        }
+        return { rows, grid };
+      }
+
+      function parseInventorySummary(source) {
+        const summary = { productCode: '', productName: '', updatedAt: '', categoryLabel: '' };
+        if (!source || !(source.querySelectorAll || source.tagName === 'TABLE')) return summary;
+        const tables = source.tagName === 'TABLE' ? [source] : Array.from(source.querySelectorAll('table')).slice(0, 32);
+        const fields = {
+          '品番': 'productCode', '商品名': 'productName', '作成日付': 'updatedAt', '作成日時': 'updatedAt',
+          '更新日時': 'updatedAt', '更新日付': 'updatedAt', '更新日': 'updatedAt', 'カテゴリ': 'categoryLabel',
+          'カテゴリー': 'categoryLabel', '商品分類': 'categoryLabel',
+        };
+        for (const table of tables) {
+          const rows = tableRows(table).slice(0, 12);
+          for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+            const row = rows[rowIndex];
+            const cells = Array.from(row.cells);
+            for (let index = 0; index < cells.length; index++) {
+              const label = nodeText(cells[index]);
+              const key = fields[keyText(label)];
+              if (key && !summary[key]) {
+                const beside = cells[index + 1] ? nodeText(cells[index + 1]) : '';
+                const below = rows[rowIndex + 1]?.cells[index] ? nodeText(rows[rowIndex + 1].cells[index]) : '';
+                if (beside && !fields[keyText(beside)]) summary[key] = beside;
+                else if (below && !fields[keyText(below)]) summary[key] = below;
+              } else {
+                const inline = label.match(/^(品番|商品名|作成日付|作成日時|更新日時|更新日付|更新日|カテゴリ|カテゴリー|商品分類)\s*[:：]\s*(.+)$/);
+                if (inline) {
+                  const inlineKey = fields[keyText(inline[1])];
+                  if (inlineKey && !summary[inlineKey]) summary[inlineKey] = clean(inline[2]);
+                }
+              }
+            }
+          }
+        }
+        return summary;
+      }
+
+      function parseInventoryTable(table) {
+        const expanded = expandTable(table);
+        if (!expanded) return null;
+        const { grid } = expanded;
+        const firstMetricRow = grid.findIndex(row => row.some(cell => cell && metricKey(cell.text)));
+        if (firstMetricRow < 0) return null;
+        const firstMetric = grid[firstMetricRow].find(cell => cell && metricKey(cell.text));
+        const metricColumn = firstMetric.column;
+        if (metricColumn < 1) return null;
+        const axisColumn = metricColumn - 1;
+        let axis = '';
+        for (let index = 0; index < firstMetricRow; index++) {
+          const label = keyText(grid[index][axisColumn]?.text);
+          if (label === 'サイズ' || label === 'カラー') axis = label;
+        }
+        if (!axis) return null;
+        const header = grid[firstMetricRow - 1];
+        const totalColumn = header.findIndex((cell, column) => column > metricColumn && cell && /^(合計|総計)$/.test(keyText(cell.text)));
+        if (totalColumn <= metricColumn) return null;
+        const metricRows = [];
+        for (let index = firstMetricRow; index < grid.length; index++) {
+          const row = grid[index];
+          const metric = row[metricColumn];
+          const key = metric && metricKey(metric.text);
+          if (!key || metric.row !== index) continue;
+          if (!row[axisColumn] || !row[totalColumn]) return null;
+          metricRows.push({ row, index, key, label: metric.text, axisCode: clean(row[axisColumn].text) });
+        }
+        if (!metricRows.length) return null;
+        const width = Math.max(header.length, ...metricRows.map(record => record.row.length));
+        const crossColumns = [];
+        const paddingColumns = [];
+        for (let column = totalColumn + 1; column < width; column++) {
+          const cell = header[column];
+          const code = clean(cell?.text);
+          if (!code) {
+            if (metricRows.some(record => clean(record.row[column]?.text))) return null;
+            paddingColumns.push(column);
+            continue;
+          }
+          if (!cell || cell.width !== 1 || cell.column !== column || /^(サイズ|カラー|合計|総計)$/.test(keyText(code))) return null;
+          if (metricRows.some(record => !record.row[column])) return null;
+          crossColumns.push({ column, code });
+        }
+        if (!crossColumns.length || new Set(crossColumns.map(record => record.code)).size !== crossColumns.length) return null;
+        const groups = [];
+        const seen = new Set();
+        let current = null;
+        for (const record of metricRows) {
+          if (!record.axisCode) return null;
+          if (!current || current.code !== record.axisCode) {
+            if (seen.has(record.axisCode)) return null;
+            seen.add(record.axisCode);
+            current = { code: record.axisCode, isTotal: /^(総計|合計|全体|全カラー)$/.test(keyText(record.axisCode)), metrics: Object.create(null) };
+            groups.push(current);
+          }
+          if (own(current.metrics, record.key)) return null;
+          current.metrics[record.key] = { label: record.label, total: record.row[totalColumn].text, values: crossColumns.map(column => record.row[column.column].text) };
+        }
+        let sizeCodes, colors;
+        if (axis === 'カラー') {
+          sizeCodes = crossColumns.map(record => record.code);
+          colors = groups.map(group => ({ color: group.code, isTotal: group.isTotal, metrics: group.metrics }));
+        } else {
+          const sizeGroups = groups.filter(group => !group.isTotal);
+          const totalGroups = groups.filter(group => group.isTotal);
+          if (!sizeGroups.length || totalGroups.length > 1) return null;
+          const overall = totalGroups[0];
+          sizeCodes = sizeGroups.map(group => group.code);
+          colors = crossColumns.map((column, columnIndex) => {
+            const color = { color: column.code, isTotal: false, metrics: Object.create(null) };
+            for (const definition of metrics) {
+              if (!groups.some(group => own(group.metrics, definition.key))) continue;
+              color.metrics[definition.key] = {
+                label: groups.find(group => own(group.metrics, definition.key)).metrics[definition.key].label,
+                total: overall?.metrics[definition.key]?.values[columnIndex] ?? null,
+                values: sizeGroups.map(group => group.metrics[definition.key]?.values[columnIndex] ?? null),
+              };
+            }
+            return color;
+          });
+          const aggregate = { color: overall?.code || '総計', isTotal: true, metrics: Object.create(null) };
+          for (const definition of metrics) {
+            if (!groups.some(group => own(group.metrics, definition.key))) continue;
+            aggregate.metrics[definition.key] = {
+              label: groups.find(group => own(group.metrics, definition.key)).metrics[definition.key].label,
+              total: overall?.metrics[definition.key]?.total ?? null,
+              values: sizeGroups.map(group => group.metrics[definition.key]?.total ?? null),
+            };
+          }
+          colors.push(aggregate);
+        }
+        if (!colors.length || !colors.some(color => own(color.metrics, 'available'))) return null;
+        return { schemaVersion: 1, orientation: axis === 'サイズ' ? 'sizes-down' : 'colors-down', ignoredPaddingColumns: paddingColumns.length, product: parseInventorySummary(table), sizeCodes, colors };
+      }
+
+      function configureSizeMappings(definitions) {
+        if (!definitions || typeof definitions !== 'object' || Array.isArray(definitions)) return;
+        for (const categoryKey of Object.keys(definitions).slice(0, 32)) {
+          if (!/^[A-Za-z0-9_.-]{1,64}$/.test(categoryKey) || ['__proto__', 'constructor', 'prototype'].includes(categoryKey)) continue;
+          const definition = definitions[categoryKey];
+          if (!definition || !['footwear', 'apparel', 'other'].includes(definition.kind)) continue;
+          const category = { kind: definition.kind, title: clean(definition.title).slice(0, 80), codes: Object.create(null) };
+          for (const code of Object.keys(definition.codes || {}).slice(0, 256)) {
+            if (!/^[A-Za-z0-9_.-]{1,32}$/.test(code) || ['__proto__', 'constructor', 'prototype'].includes(code)) continue;
+            const definitionEntry = definition.codes[code];
+            if (!definitionEntry || typeof definitionEntry !== 'object') continue;
+            const entry = Object.create(null);
+            for (const unit of ['label', 'JP', 'US', 'EU', 'CH']) {
+              if (typeof definitionEntry[unit] === 'string' || typeof definitionEntry[unit] === 'number') entry[unit] = clean(definitionEntry[unit]).slice(0, 80);
+            }
+            category.codes[code] = entry;
+          }
+          catalogs[categoryKey] = category;
+        }
+      }
+
+      function formatSize(code, categoryKey, unit = 'JP') {
+        const originalCode = clean(code);
+        const category = own(catalogs, categoryKey) ? catalogs[categoryKey] : null;
+        const entry = category && own(category.codes, originalCode) ? category.codes[originalCode] : null;
+        if (category?.kind === 'footwear') {
+          const selected = ['JP', 'US', 'EU', 'CH'].includes(unit) ? unit : 'JP';
+          if (entry && own(entry, selected) && entry[selected] !== '') return { text: entry[selected], unit: selected, code: originalCode, confirmed: true };
+          return { text: '—', unit: selected, code: originalCode, confirmed: false };
+        }
+        if (entry && own(entry, 'label') && entry.label !== '') return { text: entry.label, unit: '', code: originalCode, confirmed: true };
+        return { text: originalCode, unit: '', code: originalCode, confirmed: false };
+      }
+
+      function addStyles(document) {
+        if (document.getElementById('y3client-inventory-presentation-style')) return;
+        const style = document.createElement('style');
+        style.id = 'y3client-inventory-presentation-style';
+        style.textContent = `
+          [data-y3client-inventory] { color:#15171a; font:14px/1.45 -apple-system,BlinkMacSystemFont,'Helvetica Neue',sans-serif; max-width:100%; box-sizing:border-box; }
+          [data-y3client-inventory] * { box-sizing:border-box; }
+          [data-y3client-inventory-header] { margin:0 0 16px; }
+          [data-y3client-inventory-title] { margin:0; font-size:21px; line-height:1.3; letter-spacing:-.035em; overflow-wrap:anywhere; }
+          [data-y3client-inventory-name] { margin:6px 0; font-size:15px; line-height:1.45; overflow-wrap:anywhere; }
+          [data-y3client-inventory-updated] { margin:5px 0 0; color:#717984; font-size:11px; overflow-wrap:anywhere; }
+          [data-y3client-inventory-toolbar] { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:0 0 12px; }
+          [data-y3client-inventory-toolbar] p { margin:0; font-size:12px; color:#717984; }
+          [data-y3client-inventory-table-button] { min-height:44px; padding:9px 12px; border:1px solid #dce1e5; border-radius:10px; background:#fff; color:#15171a; font:600 12px/1.3 -apple-system,BlinkMacSystemFont,sans-serif; white-space:nowrap; }
+          [data-y3client-size-selector] { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:3px; margin:0 0 6px; padding:4px; background:#e9ecef; border-radius:11px; }
+          [data-y3client-size-unit] { min-width:0; min-height:44px; padding:8px 4px; border:0; border-radius:8px; background:transparent; color:#59626c; font:600 13px/1.2 -apple-system,BlinkMacSystemFont,sans-serif; }
+          [data-y3client-size-unit][aria-pressed='true'] { background:#111; color:#fff; }
+          [data-y3client-inventory-size-note] { margin:0 0 14px; font-size:11px; color:#717984; }
+          [data-y3client-inventory-filter] { margin:0 0 14px; }
+          [data-y3client-inventory-filter-label] { display:flex; align-items:center; gap:9px; min-height:44px; color:#303841; font-size:13px; }
+          [data-y3client-inventory-stock-filter] { width:20px!important; height:20px!important; min-width:20px!important; min-height:20px!important; margin:0; padding:0!important; accent-color:#111; }
+          [data-y3client-inventory-filter-note] { margin:0; color:#717984; font-size:11px; }
+          [data-y3client-inventory-empty] { margin:14px 0 5px; color:#717984; font-size:12px; }
+          [data-y3client-inventory-color] { margin:0 0 14px; padding:15px; border:1px solid #dfe4e8; border-radius:14px; background:#fff; }
+          [data-y3client-inventory-color-title] { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:0 0 12px; font-size:14px; line-height:1.4; overflow-wrap:anywhere; }
+          [data-y3client-inventory-color-title] span { font-size:11px; font-weight:400; color:#717984; }
+          [data-y3client-inventory-totals] { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:5px; margin:0 0 13px; padding:10px 0; border-top:1px solid #edf0f2; border-bottom:1px solid #edf0f2; }
+          [data-y3client-inventory-total] { min-width:0; }
+          [data-y3client-inventory-total] dt { color:#717984; font-size:10px; white-space:normal; }
+          [data-y3client-inventory-total] dd { margin:3px 0 0; color:#15171a; font-size:18px; font-weight:650; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+          [data-y3client-inventory-grid] { width:100%; border-collapse:collapse; table-layout:fixed; font:13px/1.35 -apple-system,BlinkMacSystemFont,sans-serif; }
+          [data-y3client-inventory-grid] th { padding:7px 4px; color:#717984; font-size:10px; font-weight:500; text-align:right; border:0; border-bottom:1px solid #edf0f2; white-space:normal; }
+          [data-y3client-inventory-grid] th:first-child { width:38%; text-align:left; }
+          [data-y3client-inventory-grid] td { padding:10px 4px; border:0; border-bottom:1px solid #f0f2f4; vertical-align:middle; text-align:right; white-space:normal; overflow-wrap:anywhere; color:#15171a; font-size:16px; font-weight:550; font-variant-numeric:tabular-nums; }
+          [data-y3client-inventory-grid] td:first-child { text-align:left; font-size:14px; }
+          [data-y3client-inventory-grid] tr:last-child td { border-bottom:0; }
+          [data-y3client-inventory-size-code] { display:block; margin-top:3px; color:#8a929b; font-size:10px; font-weight:400; }
+          [data-y3client-inventory-details] { margin-top:7px; border-top:1px solid #edf0f2; }
+          [data-y3client-inventory-details] > summary { display:list-item; min-height:44px; padding:13px 0 8px; color:#59626c; font-size:12px; cursor:pointer; }
+          [data-y3client-inventory] button:focus-visible, [data-y3client-inventory] summary:focus-visible { outline:2px solid #111; outline-offset:2px; }
+          @media (max-width:340px) { [data-y3client-inventory-color] { padding:12px; } [data-y3client-inventory-total] dt { font-size:9px; } }
+        `;
+        (document.head || document.documentElement).appendChild(style);
+      }
+
+      function renderInventory(summary, matrix, container) {
+        if (!container || container.nodeType !== Node.ELEMENT_NODE || !matrix || !Array.isArray(matrix.sizeCodes) || !Array.isArray(matrix.colors) || matrix.sizeCodes.length > 64 || matrix.colors.length > 128) return false;
+        if (clean(summary?.productCode) && clean(matrix.product?.productCode) && clean(summary.productCode) !== clean(matrix.product.productCode)) return false;
+        const document = container.ownerDocument;
+        if (document.location.origin !== ORIGIN) return false;
+        addStyles(document);
+        const state = containerState.get(container) || { unit: 'JP', onlyStock: false, openColors: new Set() };
+        containerState.set(container, state);
+        const metadata = {};
+        for (const key of ['productCode', 'productName', 'updatedAt', 'categoryKey', 'categoryLabel']) metadata[key] = clean(summary?.[key] || matrix.product?.[key]);
+        const category = own(catalogs, metadata.categoryKey) ? catalogs[metadata.categoryKey] : null;
+        const element = (tag, attribute, value) => {
+          const node = document.createElement(tag);
+          if (attribute) node.setAttribute(attribute, '');
+          if (value !== undefined) node.textContent = String(value);
+          return node;
+        };
+        const displayValue = value => value === undefined || value === null ? '—' : (String(value) === '' ? '\u00a0' : String(value));
+        const section = element('section', 'data-y3client-inventory');
+        section.setAttribute('aria-label', '在庫照会結果');
+        const header = element('header', 'data-y3client-inventory-header');
+        header.appendChild(element('h1', 'data-y3client-inventory-title', metadata.productCode || '在庫照会結果'));
+        if (metadata.productName) header.appendChild(element('p', 'data-y3client-inventory-name', metadata.productName));
+        if (metadata.updatedAt) header.appendChild(element('p', 'data-y3client-inventory-updated', '作成日時 ' + metadata.updatedAt));
+        section.appendChild(header);
+        const toolbar = element('div', 'data-y3client-inventory-toolbar');
+        const colors = matrix.colors.filter(color => color && typeof color.color === 'string' && color.metrics && typeof color.metrics === 'object');
+        toolbar.appendChild(element('p', '', colors.filter(color => !color.isTotal).length + 'カラー・' + matrix.sizeCodes.length + 'サイズ'));
+        const fallback = element('button', 'data-y3client-inventory-table-button', '表で表示');
+        fallback.type = 'button';
+        fallback.addEventListener('click', () => {
+          container.dispatchEvent(new CustomEvent('y3client:inventory-show-table', { bubbles: true }));
+          if (typeof api.onShowTable === 'function') api.onShowTable(container);
+        });
+        toolbar.appendChild(fallback);
+        section.appendChild(toolbar);
+        if (category?.kind === 'footwear') {
+          const selector = element('div', 'data-y3client-size-selector');
+          selector.setAttribute('role', 'group');
+          selector.setAttribute('aria-label', 'シューズのサイズ表記');
+          for (const unit of ['JP', 'US', 'EU', 'CH']) {
+            const button = element('button', '', unit);
+            button.type = 'button';
+            button.setAttribute('data-y3client-size-unit', unit);
+            button.setAttribute('aria-pressed', state.unit === unit ? 'true' : 'false');
+            button.addEventListener('click', () => { state.unit = unit; renderInventory(summary, matrix, container); });
+            selector.appendChild(button);
+          }
+          section.appendChild(selector);
+          section.appendChild(element('p', 'data-y3client-inventory-size-note', 'USはメンズ、CHは中国（CHN）の参考換算です。未確認の表記は元コードを併記します。'));
+        } else if (!category) {
+          section.appendChild(element('p', 'data-y3client-inventory-size-note', '商品カテゴリを確認できないため、サイズコードを表示しています。'));
+        }
+        const filter = element('div', 'data-y3client-inventory-filter');
+        const filterLabel = element('label', 'data-y3client-inventory-filter-label');
+        const filterCheckbox = element('input', 'data-y3client-inventory-stock-filter');
+        filterCheckbox.type = 'checkbox';
+        filterCheckbox.checked = state.onlyStock;
+        filterCheckbox.addEventListener('change', () => { state.onlyStock = filterCheckbox.checked; renderInventory(summary, matrix, container); });
+        filterLabel.append(filterCheckbox, document.createTextNode('在庫ありのみ'));
+        filter.appendChild(filterLabel);
+        filter.appendChild(element('p', 'data-y3client-inventory-filter-note', '有効在庫が0のサイズを非表示。未確認・マイナスは表示します。'));
+        section.appendChild(filter);
+        const isExplicitZero = value => typeof value === 'string' || typeof value === 'number' ? /^0+(?:\.0+)?$/.test(clean(value)) : false;
+        const makeGrid = (color, definitions, detail, visibleIndices) => {
+          const table = element('table', 'data-y3client-inventory-grid');
+          table.setAttribute('aria-label', (color.isTotal ? color.color : 'カラー ' + color.color) + (detail ? ' 積送・取置在庫' : ' サイズ別在庫・販売実績'));
+          const head = document.createElement('thead');
+          const heading = document.createElement('tr');
+          for (const label of ['サイズ', ...definitions.map(metric => metric.label)]) {
+            const cell = element('th', '', label);
+            cell.scope = 'col';
+            heading.appendChild(cell);
+          }
+          head.appendChild(heading);
+          table.appendChild(head);
+          const body = document.createElement('tbody');
+          for (const index of visibleIndices) {
+            const code = clean(matrix.sizeCodes[index]);
+            const formatted = formatSize(code, metadata.categoryKey, state.unit);
+            const row = element('tr', detail ? 'data-y3client-inventory-detail-row' : 'data-y3client-inventory-size-row');
+            row.setAttribute('data-y3client-size-code', code);
+            const sizeCell = element('td');
+            sizeCell.appendChild(document.createTextNode((formatted.unit && formatted.confirmed ? formatted.unit + ' ' : '') + formatted.text));
+            sizeCell.appendChild(element('span', 'data-y3client-inventory-size-code', formatted.confirmed ? 'コード ' + code : (formatted.unit ? '未確認 · ' + code : 'サイズコード')));
+            row.appendChild(sizeCell);
+            for (const definition of definitions) row.appendChild(element('td', '', displayValue(color.metrics[definition.key]?.values?.[index])));
+            body.appendChild(row);
+          }
+          table.appendChild(body);
+          return table;
+        };
+        for (const color of colors) {
+          const card = element('article', 'data-y3client-inventory-color');
+          card.setAttribute('data-y3client-color-code', color.color);
+          if (color.isTotal) card.setAttribute('data-y3client-inventory-overall-total', '');
+          const title = element('h2', 'data-y3client-inventory-color-title', color.isTotal ? color.color : 'カラー ' + color.color);
+          title.appendChild(element('span', '', '元データの合計'));
+          card.appendChild(title);
+          const totals = element('dl', 'data-y3client-inventory-totals');
+          for (const definition of metrics) {
+            const total = element('div', 'data-y3client-inventory-total');
+            total.setAttribute('data-y3client-metric', definition.key);
+            total.append(element('dt', '', definition.label), element('dd', '', displayValue(color.metrics[definition.key]?.total)));
+            totals.appendChild(total);
+          }
+          card.appendChild(totals);
+          const visibleIndices = matrix.sizeCodes.map((_, index) => index).filter(index => !state.onlyStock || !isExplicitZero(color.metrics.available?.values?.[index]));
+          if (!visibleIndices.length) {
+            card.appendChild(element('p', 'data-y3client-inventory-empty', '該当するサイズはありません'));
+            section.appendChild(card);
+            continue;
+          }
+          card.appendChild(makeGrid(color, [metrics[0], metrics[3]], false, visibleIndices));
+          const detail = element('details', 'data-y3client-inventory-details');
+          const colorKey = (color.isTotal ? 'total:' : 'color:') + color.color;
+          detail.open = state.openColors.has(colorKey);
+          detail.addEventListener('toggle', () => {
+            if (detail.open) state.openColors.add(colorKey);
+            else state.openColors.delete(colorKey);
+          });
+          detail.appendChild(element('summary', '', '積送在庫・取置在庫を見る'));
+          detail.appendChild(makeGrid(color, [metrics[1], metrics[2]], true, visibleIndices));
+          card.appendChild(detail);
+          section.appendChild(card);
+        }
+        container.replaceChildren(section);
+        return true;
+      }
+
+      const api = { version: 1, parseInventoryTable, parseInventorySummary, configureSizeMappings, formatSize, renderInventory, onShowTable: null };
+      window.__y3InventoryPresentation = api;
+      document.addEventListener('y3client:inventory-update', event => {
+        const detail = event.detail;
+        if (detail && typeof detail === 'object' && detail.container) renderInventory(detail.summary, detail.matrix, detail.container);
+      });
+    })();
+
+    (() => {
+      if(location.origin!=='https://adidas-y3.poscmcloud.jp:15505'||!/^\/scripts\/verona\/(?:print|dwh|display)\/prtz011(?:_\d+)*\.asp$/i.test(location.pathname))return;
+      // Internal codes confirmed by the user. US men's/EU: adidas manufacturer chart.
+      // CH (CHN): reference conversions from published Y-3/adidas shoe labels.
+      const catalog={
+      "footwear": {
+        "kind": "footwear",
+        "title": "シューズ",
+        "codes": {
+          "313": {
+            "JP": "25.5",
+            "US": "7.5",
+            "EU": "40 2/3",
+            "CH": "250"
+          },
+          "314": {
+            "JP": "26",
+            "US": "8",
+            "EU": "41 1/3",
+            "CH": "255"
+          },
+          "315": {
+            "JP": "26.5",
+            "US": "8.5",
+            "EU": "42",
+            "CH": "260"
+          },
+          "316": {
+            "JP": "27",
+            "US": "9",
+            "EU": "42 2/3",
+            "CH": "265"
+          },
+          "317": {
+            "JP": "27.5",
+            "US": "9.5",
+            "EU": "43 1/3",
+            "CH": "265"
+          },
+          "318": {
+            "JP": "28",
+            "US": "10",
+            "EU": "44",
+            "CH": "270"
+          }
+        }
+      },
+      "apparel": {
+        "kind": "apparel",
+        "title": "ウェア",
+        "codes": {
+          "100": {
+            "label": "2XS"
+          },
+          "101": {
+            "label": "XS"
+          },
+          "102": {
+            "label": "S"
+          },
+          "103": {
+            "label": "M"
+          },
+          "104": {
+            "label": "L"
+          },
+          "105": {
+            "label": "XL"
+          }
+        }
+      },
+      "headwear": {
+        "kind": "apparel",
+        "title": "帽子",
+        "codes": {
+          "100": {
+            "label": "2XS"
+          },
+          "101": {
+            "label": "XS"
+          },
+          "102": {
+            "label": "S"
+          },
+          "103": {
+            "label": "M"
+          },
+          "104": {
+            "label": "L"
+          },
+          "105": {
+            "label": "XL"
+          }
+        }
+      }
+    };
+      window.__y3InventoryPresentation?.configureSizeMappings(catalog);
+      try{if(window.top.location.origin===location.origin)window.top.__y3InventorySizeCatalog=catalog;}catch(_){}
+    })();
+
+    (() => {
+      'use strict';
+      const ORIGIN='https://adidas-y3.poscmcloud.jp:15505';
+      const rootPath=/^\/scripts\/verona\/(?:print|dwh)\/prtz011_2\.asp$/i;
+      const trusted=win=>{try{return win.location.origin===ORIGIN;}catch(_){return false;}};
+      let host;
+      try {host=window.top;if(!trusted(host)||!rootPath.test(host.location.pathname))return;}catch(_){return;}
+      if(host.__y3ClientInventoryMerge){host.__y3ClientInventoryMerge.reconcile();return;}
+      const state={primary:null,secondary:null,view:null,mount:null,signature:'',mode:'cards',merged:false,raw:null,sourceTable:null};
+      const listening=new WeakSet();
+      const clean=value=>String(value??'').replace(/\s+/g,' ').trim();
+      let running=false;
+      const invalidate=()=>{
+        if(state.primary)state.primary.documentElement.removeAttribute('data-y3client-inventory-primary');
+        if(state.secondary)state.secondary.documentElement.removeAttribute('data-y3client-inventory-secondary');
+        state.view?.remove();state.primary=null;state.secondary=null;state.view=null;state.mount=null;state.signature='';state.sourceTable=null;state.merged=false;
+      };
+      const leafFrames=()=>{
+        const result=[];
+        const walk=(win,depth)=>{
+          if(depth>6||!trusted(win))return;
+          for(const element of win.document.querySelectorAll('frame')){
+            const child=element.contentWindow;
+            if(!child||!trusted(child))continue;
+            if(!listening.has(element)){
+              listening.add(element);
+              element.addEventListener('load',()=>{reconcile();host.setTimeout(reconcile,0);});
+            }
+            if(child.document.querySelector('frameset'))walk(child,depth+1);
+            else result.push({win:child,doc:child.document,path:child.location.pathname});
+          }
+        };
+        walk(host,0);return result;
+      };
+      const installStyle=doc=>{
+        if(doc.getElementById('y3client-inventory-merge-style'))return;
+        const style=doc.createElement('style');style.id='y3client-inventory-merge-style';
+        style.textContent=`
+          html[data-y3client-inventory-primary] { background:#f4f5f6; }
+          html[data-y3client-inventory-primary] body { margin:0!important;padding:18px 16px 24px!important;background:transparent!important;max-width:100%;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,sans-serif; }
+          html[data-y3client-inventory-primary] body > :not([data-y3client-inventory-view]):not(script):not(style) { display:none!important; }
+          [data-y3client-inventory-view] { width:100%;max-width:100%;box-sizing:border-box; }
+          [data-y3client-inventory-pages] { display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 0 18px;color:#59626c;font:13px/1.4 -apple-system,BlinkMacSystemFont,sans-serif; }
+          [data-y3client-inventory-pages] button,[data-y3client-inventory-pages] select { min-width:44px;min-height:44px;max-width:100%;border:1px solid #dce1e5;border-radius:9px;background:#fff;color:#17191d;padding:8px 12px;font:14px/1.3 -apple-system,BlinkMacSystemFont,sans-serif; }
+          [data-y3client-inventory-pages] button:disabled { opacity:.4; }
+          [data-y3client-inventory-pages] label { display:flex;align-items:center;gap:8px; }
+          [data-y3client-inventory-back] { width:100%;min-height:44px;margin:4px 0 8px;padding:10px 12px;border:1px solid #dce1e5;border-radius:9px;background:#fff;font-size:14px;color:#17191d; }
+          [data-y3client-inventory-raw-scroll] { max-width:100%;width:100%;overflow-x:auto;background:#fff;border-radius:12px; }
+          [data-y3client-inventory-raw-scroll] table { position:static!important;left:auto!important;top:auto!important;border-collapse:collapse;width:max-content!important;min-width:100%; }
+          [data-y3client-inventory-raw-scroll] th,[data-y3client-inventory-raw-scroll] td { border:1px solid #e3e5e8;padding:9px 12px;white-space:nowrap;font:13px/1.4 -apple-system,BlinkMacSystemFont,sans-serif; }
+          [data-y3client-inventory-view] [hidden] { display:none!important; }
+        `;
+        (doc.head||doc.documentElement).appendChild(style);
+      };
+      const showTable=()=>{
+        if(!state.merged||!state.raw||!state.mount)return;
+        state.mode='table';state.mount.hidden=true;state.raw.hidden=false;
+      };
+      const createRawView=(doc,source,summary)=>{
+        const panel=doc.createElement('section');panel.setAttribute('data-y3client-inventory-raw','');
+        const title=doc.createElement('h1');title.textContent=summary.productCode;panel.appendChild(title);
+        const caption=doc.createElement('p');caption.textContent=[summary.productName,summary.updatedAt].filter(Boolean).join(' · ');panel.appendChild(caption);
+        const back=doc.createElement('button');back.type='button';back.setAttribute('data-y3client-inventory-back','');back.textContent='サイズ別一覧に戻る';
+        back.addEventListener('click',()=>{state.mode='cards';panel.hidden=true;state.mount.hidden=false;});panel.appendChild(back);
+        const hint=doc.createElement('p');hint.textContent='元のサイズコードで表示しています。表は左右にスクロールできます。';hint.style.cssText='font-size:12px;color:#737b82;';panel.appendChild(hint);
+        const scroll=doc.createElement('div');scroll.setAttribute('data-y3client-inventory-raw-scroll','');scroll.setAttribute('role','region');scroll.setAttribute('aria-label','元の在庫表');scroll.tabIndex=0;
+        const copy=source.cloneNode(true), originals=[source,...source.querySelectorAll('*')], copies=[copy,...copy.querySelectorAll('*')];
+        for(let index=0;index<copies.length;index++){
+          const node=copies[index];
+          for(const attribute of Array.from(node.attributes))if(/^on/i.test(attribute.name)||['id','name','style'].includes(attribute.name))node.removeAttribute(attribute.name);
+          if(node.tagName==='A')node.addEventListener('click',event=>{event.preventDefault();if(originals[index]?.isConnected)originals[index].click();});
+        }
+        scroll.appendChild(copy);panel.appendChild(scroll);return panel;
+      };
+      const categoryFor=matrix=>{
+        const label=clean(matrix.product.categoryLabel),name=clean(matrix.product.productName);
+        if(/フットウェア|シューズ|footwear/i.test(label))return 'footwear';
+        if(matrix.sizeCodes.length&&matrix.sizeCodes.every(code=>/^3\d\d$/.test(code)))return 'footwear';
+        if(matrix.sizeCodes.length&&matrix.sizeCodes.every(code=>/^10[0-5]$/.test(code)))return /CAP|HAT|BEANIE|キャップ|ハット|ビーニー/i.test(name)?'headwear':'apparel';
+        return '';
+      };
+      const addPager=(primary,view)=>{
+        const doc=primary.doc;
+        const original=doc.querySelector('select[name="PgSelect"]');
+        if(original){
+          const section=doc.createElement('div');section.setAttribute('data-y3client-inventory-pages','');
+          const label=doc.createElement('label');label.textContent='ページ';
+          const select=doc.createElement('select');select.setAttribute('aria-label','在庫結果のページ');
+          for(const option of Array.from(original.options)){const copy=doc.createElement('option');copy.value=option.value;copy.textContent=option.text;copy.disabled=option.disabled;select.appendChild(copy);}
+          select.value=original.value;label.appendChild(select);section.appendChild(label);
+          const max=doc.querySelector('input[name="PgMax"]');
+          if(max&&/^\d{1,6}$/.test(max.value)){const count=doc.createElement('span');count.textContent='/ '+max.value;section.appendChild(count);}
+          for(const [name,text] of [['hyouzi','表示'],['Front','前へ'],['Back','次へ']]){
+            const control=doc.querySelector('input[name="'+name+'"]');if(!control)continue;
+            const button=doc.createElement('button');button.type='button';button.textContent=text;button.disabled=control.disabled;button.setAttribute('aria-label','在庫結果 '+text);
+            button.addEventListener('click',()=>{if(!doc.documentElement.isConnected||control.disabled)return;original.value=select.value;control.click();});section.appendChild(button);
+          }
+          view.appendChild(section);
+        }
+        const navigation=leafFrames().find(frame=>/\/prtz011_2_1\.asp$/i.test(frame.path));
+        const search=navigation&&Array.from(navigation.doc.querySelectorAll('a[href]')).find(anchor=>{try{return new URL(anchor.href,navigation.win.location.href).origin===ORIGIN&&/\/prtz011_1\.asp$/i.test(new URL(anchor.href,navigation.win.location.href).pathname);}catch(_){return false;}});
+        if(search){const button=doc.createElement('button');button.type='button';button.setAttribute('data-y3client-inventory-back','');button.textContent='検索条件を変更';button.addEventListener('click',()=>search.click());view.appendChild(button);}
+      };
+      function reconcile(){
+        if(running)return state.merged;
+        if(!trusted(host)||!rootPath.test(host.location.pathname)){invalidate();return false;}
+        running=true;
+        try{
+          const frames=leafFrames();
+          const primary=frames.find(frame=>/\/prtz011_2_3\.asp$/i.test(frame.path));
+          const secondary=frames.find(frame=>/\/prtz011_2_2\.asp$/i.test(frame.path));
+          if(!primary||!secondary||primary.doc.readyState!=='complete'||secondary.doc.readyState!=='complete'){invalidate();return false;}
+          const api=primary.win.__y3InventoryPresentation;
+          if(!api){invalidate();return false;}
+          const summary={productCode:'',productName:'',updatedAt:'',categoryLabel:''};
+          for(const table of Array.from(primary.doc.querySelectorAll('table')).filter(table=>!table.closest('[data-y3client-inventory-view]')).slice(0,16)){
+            const fields=api.parseInventorySummary(table);
+            for(const key of Object.keys(summary))if(!summary[key]&&fields[key])summary[key]=fields[key];
+          }
+          const candidates=Array.from(secondary.doc.querySelectorAll('table')).filter(table=>!table.closest('[data-y3client-inventory]'));
+          candidates.sort((a,b)=>(b.id.endsWith('_H')?1:0)-(a.id.endsWith('_H')?1:0));
+          let matrix=null,sourceTable=null;
+          for(const table of candidates){matrix=api.parseInventoryTable(table);if(matrix){sourceTable=table;break;}}
+          if(!matrix||!summary.productCode||!matrix.product.productCode||clean(summary.productCode)!==clean(matrix.product.productCode)){invalidate();return false;}
+          summary.categoryKey=categoryFor(matrix);
+          const catalog=host.__y3InventorySizeCatalog;
+          if(catalog)api.configureSizeMappings(catalog);
+          const signature=JSON.stringify([summary,matrix]);
+          if(state.primary===primary.doc&&state.secondary===secondary.doc&&state.signature===signature&&state.sourceTable===sourceTable&&state.view?.isConnected){return true;}
+          const samePrimary=state.primary===primary.doc;
+          if(!samePrimary){invalidate();state.mode='cards';}
+          if(!state.view){state.view=primary.doc.createElement('div');state.view.setAttribute('data-y3client-inventory-view','');state.mount=primary.doc.createElement('div');state.view.appendChild(state.mount);}
+          if(!api.renderInventory(summary,matrix,state.mount)){invalidate();return false;}
+          for(const child of Array.from(state.view.children))if(child!==state.mount)child.remove();
+          state.raw=createRawView(primary.doc,sourceTable,{...summary,productName:matrix.product.productName});state.raw.hidden=state.mode!=='table';state.mount.hidden=state.mode==='table';state.view.appendChild(state.raw);
+          addPager(primary,state.view);
+          installStyle(primary.doc);
+          primary.doc.documentElement.setAttribute('data-y3client-inventory-primary','');
+          secondary.doc.documentElement.setAttribute('data-y3client-inventory-secondary','');
+          if(!state.view.isConnected)primary.doc.body.prepend(state.view);
+          state.primary=primary.doc;state.secondary=secondary.doc;state.signature=signature;state.sourceTable=sourceTable;state.merged=true;
+          if(!state.view.__y3TableHandler){state.view.__y3TableHandler=true;state.view.addEventListener('y3client:inventory-show-table',showTable);}
+          const navigation=host.__y3ClientNavigation||(host.__y3ClientNavigation={submissionRevision:0,resultSubmissionRevision:0});
+          navigation.resultSubmissionRevision=navigation.submissionRevision||0;
+          return true;
+        }catch(_){invalidate();return false;}finally{running=false;}
+      }
+      host.__y3ClientInventoryMerge={version:1,reconcile,showTable};
+      reconcile();
+      if(document.readyState!=='complete')window.addEventListener('load',()=>{reconcile();host.setTimeout(reconcile,0);},{once:true});
     })();
     """#
 
@@ -576,6 +1268,7 @@ enum LegacySiteSupport {
       const origin = 'https://adidas-y3.poscmcloud.jp:15505';
       const trusted = win => { try { return win.location.origin === origin; } catch (_) { return false; } };
       if (!trusted(window) || !document.querySelector('frameset')) return [];
+      try { window.__y3ClientInventoryMerge?.reconcile(); } catch (_) {}
       const panes = [];
       const walk = (win, path, condition) => {
         if (!trusted(win) || path.length > 8 || panes.length >= 12) return;
@@ -605,6 +1298,15 @@ enum LegacySiteSupport {
           if (/dummy|blank|empty/i.test(win.name)) return;
           const body = win.document.body;
           if (!body || (!body.textContent.trim() && !body.querySelector('form,table,a,input,select,textarea,img'))) return;
+          if (win.document.documentElement.hasAttribute('data-y3client-inventory-primary')) {
+            panes.push({path,kind:'result',title:'在庫一覧'}); return;
+          }
+          if (win.document.documentElement.hasAttribute('data-y3client-inventory-secondary')) {
+            panes.push({path,kind:'controls',title:'元の在庫表'}); return;
+          }
+          if (/\/prtz011_2_3\.asp$/i.test(win.location.pathname)) {
+            panes.push({path,kind:'controls',title:'ページ操作'}); return;
+          }
           const tableRows = body.querySelectorAll('table tr').length;
           const tableCells = body.querySelectorAll('table td,table th').length;
           const controls = body.querySelector('input:not([type="hidden" i]),select,textarea,button');
