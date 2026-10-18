@@ -123,6 +123,10 @@ final class BrowserModel: NSObject, ObservableObject {
             controller.addUserScript(WKUserScript(source: LegacySiteSupport.inventoryPresentation,
                 injectionTime: .atDocumentEnd, forMainFrameOnly: false))
         }
+        if !controller.userScripts.contains(where: { $0.source == ReportPresentation.script }) {
+            controller.addUserScript(WKUserScript(source: ReportPresentation.script,
+                injectionTime: .atDocumentEnd, forMainFrameOnly: false))
+        }
         view.navigationDelegate = self
         view.uiDelegate = self
         view.allowsBackForwardNavigationGestures = true
@@ -592,6 +596,7 @@ final class BrowserModel: NSObject, ObservableObject {
                     let title = publicTitle.flatMap { !$0.isEmpty && $0.count <= 40 ? $0 : nil } ?? label
                     panes.append(FramePane(path: path, title: title, kind: kind))
                 }
+                let previousPanes = self.paneLists[id] ?? []
                 self.paneLists[id] = panes
                 let focusUnchanged = (self.frameFocusRevisions[id] ?? 0) == focusRevision
                 let state = snapshot["state"] as? [String: Any] ?? [:]
@@ -629,6 +634,10 @@ final class BrowserModel: NSObject, ObservableObject {
                     return
                 }
                 if let path = self.focusedPanePaths[id] {
+                    if let replacement = ReportPresentation.mergedReplacement(for: path, previous: previousPanes, current: panes) {
+                        self.applyFrameFocus(replacement, in: view, automatic: true)
+                        return
+                    }
                     if panes.contains(where: { $0.path == path }) {
                         view.evaluateJavaScript(LegacySiteSupport.focusScript(path: path), completionHandler: nil)
                     } else {

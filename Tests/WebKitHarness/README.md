@@ -1,6 +1,6 @@
 # Real WKWebView simulator harness
 
-This directory is independent of the shipping app project. It creates an unsigned iOS host application plus an XCTest bundle in a new temporary output directory. The exact checkout's `Y3Client/LegacySiteSupport.swift` is copied into the test host; no script contents are duplicated in the harness.
+This directory is independent of the shipping app project. It creates an unsigned iOS host application plus an XCTest bundle in a new temporary output directory. The exact checkout's `Y3Client/LegacySiteSupport.swift` and `Y3Client/ReportPresentation.swift` are copied into the test host; no script contents are duplicated in the harness.
 
 The only substitution is the fixed production origin to `http://127.0.0.1:17865` in each script. This lets a loopback fixture server supply the original paths without contacting the live POS site, installing a certificate or changing DNS. The fixture host alone permits HTTP. The shipping app's ATS, trust policy and Keychain are not changed or invoked. Native `BrowserModel` discovery scheduling is not exercised by this target; it tests actual WebKit injection, its all-frame page-world globals, the script's discovery result, and isolated argument passing.
 
@@ -16,6 +16,8 @@ The signed-IPA workflow runs this immediately after checkout, before restoring a
 The matrix is constructed by the fixture's own `window.load` listener. The production scripts are registered on `WKWebViewConfiguration` before the first request with `.atDocumentEnd`, `forMainFrameOnly: false`, in the same order as the app. The tests cover:
 
 - One inventory result pane, with actual leaf paths and API/style markers checked.
+- A standalone stock detail document also receives the same size cards, including delayed matrix construction, unit changes, all four metrics/totals, original actions and unsupported-source fallback.
+- Receipt conditions with multiple label/value pairs in each source row combine with their original detail document. Both arrival orders, original detail handlers, pager POSTs and data-only pager refreshes are exercised.
 - Metadata never becomes a generic card or numbered result even if merging fails.
 - Inventory families 010/015 under print/display, including reversed metadata/matrix frames with arbitrary suffixes, a separate navigation frame, and a delayed page-owned grid constructor.
 - Raw fallback styles, source-handler proxying after an identical same-document table replacement, and preservation of the selected table mode.

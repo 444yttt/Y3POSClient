@@ -18,6 +18,11 @@ const standalone = process.env.INVENTORY_PRESENTATION_SCRIPT;
 const presentation = standalone ? fs.readFileSync(standalone, 'utf8') : script('inventoryPresentation');
 assert(presentation, 'Missing inventoryPresentation; set INVENTORY_PRESENTATION_SCRIPT only for a development preview');
 const adapt = [script('viewportAndTouch'), script('mobileRedesign'), presentation].filter(Boolean).join('\n');
+// API-only cases deliberately render alternate models into their own test mount.
+// Automatic document mounting is exercised separately by the frame suites and
+// inventory_standalone.cjs, with the complete production script.
+const presentationAPI = presentation.split('// Automatic document presentation and cross-frame coordination.')[0];
+const adaptAPI = [script('viewportAndTouch'), script('mobileRedesign'), presentationAPI].filter(Boolean).join('\n');
 const autofill = script('staffCredentialAutofill');
 assert(autofill, 'Missing staffCredentialAutofill');
 const shell = body => `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>架空在庫データ</title><style>body{font:12px serif;margin:8px}table{border-collapse:collapse}td,th{border:1px solid #aaa;padding:4px;white-space:nowrap}input,select,button{font:12px serif}</style></head><body>${body}</body></html>`;
@@ -284,7 +289,11 @@ async function checkSameProductFreshness(context) {
   // A refreshed metadata response for the same SKU must not bless the old matrix.
   await page.evaluate(() => { window.__y3ClientNavigation.submissionRevision = 2; });
   await metadataFrame.evaluate(() => { document.querySelector('#inventory-summary tr:last-child td:nth-child(2)').textContent = '2026/10/17 18:00:00 現在'; });
-  for (let index = 0; index < 3; index++) assert.equal(await page.evaluate(() => window.__y3ClientInventoryMerge.reconcile()), false, 'Repeated discovery must keep a same-product old matrix pending');
+  for (let index = 0; index < 3; index++) {
+    await page.evaluate(() => { window.__y3ClientNavigation.resultSubmissionRevision = 2; });
+    assert.equal(await page.evaluate(() => window.__y3ClientInventoryMerge.reconcile()), false, 'Repeated discovery must keep a same-product old matrix pending');
+    assert.equal(await page.evaluate(() => window.__y3ClientNavigation.resultSubmissionRevision), 0, 'A generic load callback cannot mark an unmatched new inventory request ready');
+  }
   assert.equal(await metadataFrame.locator('[data-y3client-inventory]').count(), 0, 'New metadata must not display stock from the previous request');
   assert(await page.evaluate(() => window.__y3ClientNavigation.resultSubmissionRevision < 2));
   // A newly loaded matrix with exactly the old values is a legitimate new response.
@@ -437,7 +446,7 @@ async function checkSizeGuide(browser) {
   const page = await context.newPage();
   await page.goto(origin + fixturePaths.full);
   await snapshotOriginals(page);
-  await page.evaluate(adapt);
+  await page.evaluate(adaptAPI);
   const codes = Array.from({ length: 19 }, (_, index) => String(306 + index));
   const expected = {
     JP: Array.from({ length: 19 }, (_, index) => 22 + index * 0.5),
@@ -661,7 +670,7 @@ async function main() {
       const page = await context.newPage();
       await page.goto(origin + fixturePaths.full);
       await snapshotOriginals(page);
-      await page.evaluate(adapt);
+      await page.evaluate(adaptAPI);
       const parsed = await page.evaluate(() => window.__y3InventoryPresentation.parseInventoryTable(document.getElementById('inventory-matrix')));
       assert(parsed, 'The observed color / four-metric matrix must parse');
       assert.equal(parsed.schemaVersion, 1);

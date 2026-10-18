@@ -7,6 +7,7 @@ import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from receipt_fixtures import response as receipt_response
 
 
 BASE = "/scripts/verona/print/"
@@ -190,8 +191,13 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         report = re.fullmatch(r"/scripts/verona/(print|display|dwh)/(prtz(?:010|011|015))_([0-9_]+)\.asp", parsed.path)
         scenario = parse_qs(parsed.query).get("scenario", [""])[0]
-        if parsed.path == "/health":
+        receipt = receipt_response(parsed.path, parsed.query, self.command, getattr(self, "fixture_post_values", None))
+        if receipt is not None:
+            body = receipt
+        elif parsed.path == "/health":
             body = "ready"
+        elif parsed.path in [BASE + "prtz011_3.asp", BASE + "prtz015_2_2.asp"] and scenario == "standalone":
+            body = (Path(__file__).resolve().parent.parent / "fixtures" / "inventory-standalone-detail.html").read_text(encoding="utf-8")
         elif parsed.path == BASE + "prtz098_1_1.asp":
             body = compound_form()
         elif parsed.path == BASE + "prtz098_2.asp":

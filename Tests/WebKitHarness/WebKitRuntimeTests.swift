@@ -59,7 +59,8 @@ private final class FixtureSession {
         // The production configure() sequence: install BEFORE the first request, in page world.
         for source in [LegacySiteSupport.viewportAndTouch,
                        LegacySiteSupport.mobileRedesign,
-                       LegacySiteSupport.inventoryPresentation] {
+                       LegacySiteSupport.inventoryPresentation,
+                       ReportPresentation.script] {
             controller.addUserScript(WKUserScript(source: localScript(source),
                 injectionTime: .atDocumentEnd, forMainFrameOnly: false))
         }
@@ -96,6 +97,103 @@ private final class FixtureSession {
 }
 
 final class WebKitRuntimeTests: XCTestCase {
+    func testConsumedResultFocusMovesToUniqueCombinedResult() {
+        let oldHeader = FramePane(path: [0], title: "結果1", kind: .result)
+        let controls = FramePane(path: [0], title: "検索内容とページ操作", kind: .controls)
+        let result = FramePane(path: [1], title: "検索結果", kind: .result)
+        XCTAssertEqual(ReportPresentation.mergedReplacement(for: [0], previous: [oldHeader], current: [controls, result])?.path, [1])
+        XCTAssertNil(ReportPresentation.mergedReplacement(for: [0], previous: [controls], current: [controls, result]), "An explicitly selected controls pane remains selected")
+        XCTAssertNil(ReportPresentation.mergedReplacement(for: [0], previous: [oldHeader], current: [controls, result, FramePane(path: [2], title: "別集計", kind: .result)]))
+    }
+
+    @MainActor
+    func testReceiptReportCombinesConditionsWithoutReplacingDetailDOMAndDelegatesOriginalPOST() async throws {
+        for query in ["late=&mode=&reverse=", "late=header&mode=&reverse=1", "late=data&mode=&reverse=", "late=&mode=retain-header&reverse="] {
+            let session = FixtureSession(path: "/scripts/verona/print/prtz096_2.asp?" + query)
+            defer { session.close() }
+            try await session.waitForLoad()
+            try await eventually(session.view, "(()=>{window.__y3ClientReportMerge?.reconcile();return Array.from(frames).some(frame=>frame.document.documentElement.hasAttribute('data-y3client-report-primary'));})()")
+            let resultPanes = try await panes(session.view).filter { $0["kind"] as? String == "result" }
+            XCTAssertEqual(resultPanes.count, 1, query)
+            XCTAssertEqual(resultPanes.first?["title"] as? String, "検索結果", query)
+            let original = try await session.view.evaluateJavaScript("""
+                (()=>{
+                  const data=Array.from(frames).find(frame=>frame.name==='receipt-data');
+                  const doc=data.document,original=data.fixtureDataOriginals;
+                  original.button.click();
+                  return {sameTable:original.table===doc.getElementById('receipt-table'),sameForm:original.form===doc.getElementById('receipt-data-form'),
+                    sameButton:original.button===doc.querySelector('input[name=detail]'),sameHandler:original.button.onclick===data.fixtureOriginalDetailHandler,
+                    clicks:data.fixtureDetailClicks,source:fixtureDetailWindow,fields:doc.querySelectorAll('[data-y3client-report-fields] div').length,
+                    width:doc.documentElement.scrollWidth,viewport:data.innerWidth};
+                })()
+                """) as? [String: Any] ?? [:]
+            for field in ["sameTable", "sameForm", "sameButton", "sameHandler"] { XCTAssertEqual(original[field] as? Bool, true, query + field) }
+            XCTAssertEqual(original["clicks"] as? Int, 1, query)
+            XCTAssertEqual(original["source"] as? String, "receipt-data", query)
+            XCTAssertEqual(original["fields"] as? Int, 4, query)
+            XCTAssertLessThanOrEqual(original["width"] as? Int ?? Int.max, (original["viewport"] as? Int ?? 0) + 1, query)
+            let before = try await session.view.evaluateJavaScript("window.__y3ClientNavigation.submissionRevision") as? Int ?? -1
+            _ = try await session.view.evaluateJavaScript("""
+                (()=>{const doc=Array.from(frames).find(frame=>frame.name==='receipt-data').document;
+                  doc.querySelector('[data-y3client-report-pages] select').value='2';
+                  doc.querySelector('[data-y3client-report-pages] button').click();})()
+                """)
+            let retainedHeader = query.contains("retain-header") ? "true" : "false"
+            try await eventually(session.view, """
+                (()=>{window.__y3ClientReportMerge?.reconcile();const header=frames['receipt-header'];
+                  if(!\(retainedHeader)&&header.fixtureReceiptRequest?.method!=='POST')return false;
+                  const data=Array.from(frames).find(frame=>frame.name==='receipt-data');
+                  return !!data?.document.querySelector('[data-y3client-report-combined]')&&data.document.getElementById('receipt-table').textContent.includes('FICTIONAL-PAGE2-1');})()
+                """)
+            let request = try await session.view.evaluateJavaScript("""
+                (()=>{const header=Array.from(frames).find(frame=>frame.name==='receipt-header');return {
+                  method:header.fixtureReceiptRequest.method,fields:header.fixtureReceiptRequest.values,
+                  clicks:fixturePagerClicks,source:fixturePagerWindow,submission:__y3ClientNavigation.submissionRevision,
+                  ready:__y3ClientNavigation.resultSubmissionRevision};})()
+                """) as? [String: Any] ?? [:]
+            XCTAssertEqual(request["clicks"] as? Int, 1, query)
+            XCTAssertEqual(request["source"] as? String, "receipt-header", query)
+            XCTAssertEqual(request["submission"] as? Int, before + 1, query)
+            XCTAssertEqual(request["ready"] as? Int, before + 1, query)
+            if !query.contains("retain-header") {
+                XCTAssertEqual(request["method"] as? String, "POST", query)
+                let fields = request["fields"] as? [String: [String]] ?? [:]
+                XCTAssertEqual(fields["unchanged"], ["FICTIONAL-RECEIPT-TOKEN"], query)
+                XCTAssertEqual(fields["PgSelect"], ["2"], query)
+            }
+            XCTAssertEqual(session.observer.failures, [], query)
+            XCTAssertEqual(session.observer.scriptErrors, [], query)
+        }
+    }
+
+    @MainActor
+    func testReceiptReportWaitsForBothFreshSearchResponses() async throws {
+        let session = FixtureSession(path: "/scripts/verona/print/prtz096_2.asp")
+        defer { session.close() }
+        try await session.waitForLoad()
+        try await eventually(session.view, "(()=>{window.__y3ClientReportMerge?.reconcile();return Array.from(frames).some(frame=>frame.document.documentElement.hasAttribute('data-y3client-report-primary'));})()")
+        let checks = try await session.view.evaluateJavaScript("""
+            (()=>{
+              const header=frames['receipt-header'].document,data=frames['receipt-data'].document;
+              __y3ClientNavigation.submissionRevision++;
+              header.getElementById('receipt-summary').rows[4].cells[1].textContent='2026/10/18 15:00:00 現在';
+              __y3ClientNavigation.resultSubmissionRevision=__y3ClientNavigation.submissionRevision;
+              const headerFirst=!__y3ClientReportMerge.reconcile()&&!data.querySelector('[data-y3client-report-combined]')&&__y3ClientNavigation.resultSubmissionRevision===0;
+              data.getElementById('receipt-table').rows[1].cells[3].textContent='FICTIONAL-NEW-SEARCH';
+              const bothFresh=__y3ClientReportMerge.reconcile();
+              __y3ClientNavigation.submissionRevision++;
+              const old=data.getElementById('receipt-table');old.replaceWith(old.cloneNode(true));
+              const dataFirst=!__y3ClientReportMerge.reconcile()&&!data.querySelector('[data-y3client-report-combined]');
+              header.getElementById('receipt-summary').rows[4].cells[1].textContent='2026/10/18 16:00:00 現在';
+              const refreshed=__y3ClientReportMerge.reconcile();
+              return {headerFirst,bothFresh,dataFirst,refreshed,ready:__y3ClientNavigation.resultSubmissionRevision===__y3ClientNavigation.submissionRevision};
+            })()
+            """) as? [String: Bool] ?? [:]
+        for field in ["headerFirst", "bothFresh", "dataFirst", "refreshed", "ready"] { XCTAssertEqual(checks[field], true, field) }
+        XCTAssertEqual(session.observer.failures, [])
+        XCTAssertEqual(session.observer.scriptErrors, [])
+    }
+
     @MainActor
     private func eventually(_ view: WKWebView, _ expression: String,
                             diagnostics: String? = nil, file: StaticString = #filePath, line: UInt = #line) async throws {
@@ -368,9 +466,13 @@ final class WebKitRuntimeTests: XCTestCase {
                   const navigation=window.__y3ClientNavigation;
                   const next=(navigation.submissionRevision||0)+1;
                   navigation.submissionRevision=next;
-                  const pending=()=>coordinator.reconcile()===false &&
-                    navigation.resultSubmissionRevision!==next &&
-                    !primary.querySelector('[data-y3client-inventory]');
+                  const pending=()=>{
+                    // Simulate a generic leaf load claiming readiness before its
+                    // matching inventory response has arrived, including after invalidation.
+                    navigation.resultSubmissionRevision=next;
+                    return coordinator.reconcile()===false && navigation.resultSubmissionRevision===0 &&
+                      !primary.querySelector('[data-y3client-inventory]');
+                  };
                   if(!pending())return false;
                   const replaceSummary=()=>{
                     const source=primary.getElementById('inventory-summary');
@@ -797,4 +899,74 @@ final class WebKitRuntimeTests: XCTestCase {
         XCTAssertEqual(session.observer.failures, [])
         XCTAssertEqual(session.observer.scriptErrors, [])
     }
+
+    @MainActor
+    func testStandaloneStockDetailUsesSizeCardsInRealWebKit() async throws {
+        for width in [CGFloat(390), CGFloat(320)] {
+            let session = FixtureSession(path: "/scripts/verona/print/prtz015_2_2.asp?scenario=standalone", width: width)
+            defer { session.close() }
+            try await session.waitForLoad()
+            try await eventually(session.view, """
+                window.fixtureGridBuilt===true &&
+                document.querySelectorAll('[data-y3client-inventory]').length===1 &&
+                document.documentElement.hasAttribute('data-y3client-inventory-primary')
+                """)
+            let verified = try await session.view.evaluateJavaScript("""
+                (()=>{
+                  const source=document.getElementById('STOCK_H'), api=window.__y3InventoryPresentation;
+                  const before=JSON.stringify(api.parseInventoryTable(source)), parsed=JSON.parse(before);
+                  const originalBack=document.getElementById('original-back'), handler=originalBack.onclick;
+                  const color=document.querySelector('[data-y3client-color-code="MOCK-COLOR"]');
+                  if(parsed.orientation!=='colors-down' || parsed.sizeCodes.join(',')!=='313,314,315,316,317,318' ||
+                     parsed.colors.length!==2 || parsed.product.productCode!=='MOCK-F901')return false;
+                  const values={available:['1','00','-1','','3','2'],inTransit:['0','0','0','0','0','0'],
+                    reserved:['-','0','','0','0','0'],sales:['1','2','1','1','1','1']};
+                  for(const group of parsed.colors){
+                    for(const key of Object.keys(values))if(JSON.stringify(group.metrics[key].values)!==JSON.stringify(values[key]))return false;
+                    if(['available','inTransit','reserved','sales'].map(key=>group.metrics[key].total).join('|')!=='006|0|-|7')return false;
+                  }
+                  const first=()=>document.querySelector('[data-y3client-color-code="MOCK-COLOR"] [data-y3client-size-code="313"]');
+                  const current317=document.querySelector('[data-y3client-color-code="MOCK-COLOR"] [data-y3client-size-code="317"]');
+                  if(!first().textContent.includes('JP 25.5') || !current317.textContent.includes('JP 27.5'))return false;
+                  for(const [unit,label] of [['US','7.5'],['USW','8.5'],['UK','7'],['EU','40 2/3'],['CH','250'],['JP','25.5']]){
+                    document.querySelector('[data-y3client-size-unit="'+unit+'"]').click();
+                    const row=first();
+                    if(!row.cells[0].textContent.includes(label) || row.cells[1].textContent!=='1' || row.cells[2].textContent!=='1')return false;
+                  }
+                  document.querySelector('[data-y3client-color-code="MOCK-COLOR"] summary').click();
+                  const detail=document.querySelector('[data-y3client-color-code="MOCK-COLOR"] [data-y3client-inventory-detail-row][data-y3client-size-code="313"]');
+                  if(detail.cells[1].textContent!=='0' || detail.cells[2].textContent!=='-')return false;
+                  document.querySelector('[data-y3client-inventory-stock-filter]').click();
+                  if(document.querySelectorAll('[data-y3client-color-code="MOCK-COLOR"] [data-y3client-inventory-size-row]').length!==5)return false;
+                  document.querySelector('[data-y3client-inventory-table-button]').click();
+                  const raw=document.querySelector('[data-y3client-inventory-raw]');
+                  if(raw.hidden || document.querySelector('[data-y3client-inventory]').getClientRects().length!==0)return false;
+                  raw.querySelector('a').click();
+                  if(window.fixtureProductClicks!==1)return false;
+                  raw.querySelector('[data-y3client-inventory-back]').click();
+                  document.querySelector('[data-y3client-inventory-view] > [data-y3client-inventory-back]').click();
+                  if(window.fixtureBackClicks!==1 || !source.isConnected || !originalBack.isConnected || originalBack.onclick!==handler)return false;
+                  return JSON.stringify(api.parseInventoryTable(source))===before &&
+                    document.documentElement.scrollWidth<=innerWidth+1 &&
+                    Array.from(document.querySelectorAll('[data-y3client-inventory]')).every(node=>{
+                      const rect=node.getBoundingClientRect();return rect.left>=0 && rect.right<=innerWidth+1;
+                    });
+                })()
+                """) as? Bool
+            XCTAssertEqual(verified, true, "Standalone detail must use confirmed sizes and preserve every metric/action at width \(width)")
+            _ = try await session.view.evaluateJavaScript("document.getElementById('STOCK_H').rows[3].cells[3].textContent='12'")
+            try await eventually(session.view, """
+                document.querySelector('[data-y3client-color-code="MOCK-COLOR"] [data-y3client-inventory-size-row] td:nth-child(2)')?.textContent==='12'
+                """)
+            _ = try await session.view.evaluateJavaScript("document.getElementById('STOCK_H').rows[3].cells[1].textContent='未対応の列'")
+            try await eventually(session.view, """
+                !document.querySelector('[data-y3client-inventory]') &&
+                !document.documentElement.hasAttribute('data-y3client-inventory-primary') &&
+                document.getElementById('STOCK_H').getClientRects().length>0
+                """)
+            XCTAssertEqual(session.observer.failures, [])
+            XCTAssertEqual(session.observer.scriptErrors, [])
+        }
+    }
+
 }

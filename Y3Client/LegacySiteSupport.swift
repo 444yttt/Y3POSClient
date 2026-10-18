@@ -1608,13 +1608,14 @@ enum LegacySiteSupport {
       try{if(window.top.location.origin===location.origin)window.top.__y3InventorySizeCatalog=catalog;}catch(_){}
     })();
 
+    // Automatic document presentation and cross-frame coordination.
     (() => {
       'use strict';
       const ORIGIN='https://adidas-y3.poscmcloud.jp:15505';
       const rootPath=/^\/scripts\/verona\/(?:print|dwh|display)\/(prtz\d+)(?:_\d+)*\.asp$/i;
       const trusted=win=>{try{return win.location.origin===ORIGIN;}catch(_){return false;}};
       let host;
-      try {host=window.top;if(!trusted(host)||!rootPath.test(host.location.pathname)||!host.document.querySelector('frameset'))return;}catch(_){return;}
+      try {host=window.top;if(!trusted(host)||!rootPath.test(host.location.pathname))return;}catch(_){return;}
       if(host.__y3ClientInventoryMerge){host.__y3ClientInventoryMerge.reconcile();return;}
       const state={primary:null,secondary:null,view:null,mount:null,signature:'',mode:'cards',merged:false,raw:null,sourceTable:null,readySubmission:0};
       // Keep the last accepted source across invalidation. SKU equality alone cannot
@@ -1629,10 +1630,12 @@ enum LegacySiteSupport {
       const currentDocument=frame=>{try{return trusted(frame.win)&&frame.win.document===frame.doc;}catch(_){return false;}};
       let running=false;
       const invalidate=()=>{
-        if(state.merged){
-          const navigation=host.__y3ClientNavigation;
-          if(navigation?.resultSubmissionRevision===state.readySubmission)navigation.resultSubmissionRevision=0;
-        }
+        const navigation=host.__y3ClientNavigation;
+        const accepted=state.merged?state.readySubmission:lastReadySource?.submission;
+        // A generic load observer may have marked the new revision ready while
+        // one inventory response still belongs to the preceding search.
+        if(navigation&&accepted!==undefined&&(navigation.resultSubmissionRevision===accepted||
+          (navigation.submissionRevision>accepted&&navigation.resultSubmissionRevision===navigation.submissionRevision)))navigation.resultSubmissionRevision=0;
         if(state.primary)state.primary.documentElement.removeAttribute('data-y3client-inventory-primary');
         if(state.secondary)state.secondary.documentElement.removeAttribute('data-y3client-inventory-secondary');
         state.view?.remove();state.primary=null;state.secondary=null;state.view=null;state.mount=null;state.signature='';state.sourceTable=null;state.raw=null;state.merged=false;state.readySubmission=0;
@@ -1654,7 +1657,9 @@ enum LegacySiteSupport {
             else result.push({win:child,doc:child.document,path:child.location.pathname});
           }
         };
-        walk(host,0);return result;
+        if(!host.document.querySelector('frameset')&&host.document.body?.tagName==='BODY')result.push({win:host,doc:host.document,path:host.location.pathname});
+        else walk(host,0);
+        return result;
       };
       const originalTables=doc=>Array.from(doc.querySelectorAll('table')).filter(table=>!table.closest(generated)).slice(0,64);
       const hasAllMetrics=matrix=>matrix&&Array.isArray(matrix.colors)&&matrix.colors.length>0&&
@@ -1699,6 +1704,23 @@ enum LegacySiteSupport {
         const analyses=relevant.map(analyzeFrame).filter(Boolean);
         const matrices=analyses.map(record=>record.matrix).filter(Boolean);
         const metadata=analyses.map(record=>record.metadata).filter(Boolean);
+        // Product links can open a complete stock detail document without a frameset
+        // or a separate metadata frame. The same confident four-metric parser must
+        // drive that screen too, rather than leaving the raw size-code matrix visible.
+        if(!host.document.querySelector('frameset')&&matrices.length===1){
+          const secondary=matrices[0],frame=secondary.frame;
+          const api=frame.win.__y3InventoryPresentation;
+          const summary={...secondary.matrix.product};
+          const summaryTables=[];
+          for(const table of originalTables(frame.doc)){
+            const fields=api.parseInventorySummary(table);
+            if(fields.productCode&&clean(fields.productCode)!==clean(summary.productCode))return null;
+            if(fields.productCode||fields.updatedAt)summaryTables.push(table);
+            for(const key of Object.keys(fields))if(!summary[key]&&fields[key])summary[key]=fields[key];
+          }
+          if(!clean(summary.productCode))return null;
+          return {primary:frame,secondary:frame,summary,summaryTables,matrix:secondary.matrix,sourceTable:secondary.sourceTable,standalone:true};
+        }
         const pairs=[];
         for(const secondary of matrices){
           const matching=metadata.filter(primary=>primary.frame.doc!==secondary.frame.doc&&
@@ -1790,10 +1812,17 @@ enum LegacySiteSupport {
           if(anchor){search=anchor;navigation=frame;break;}
         }
         if(search){const button=doc.createElement('button');button.type='button';button.setAttribute('data-y3client-inventory-back','');button.textContent='検索条件を変更';button.addEventListener('click',()=>{if(currentDocument(navigation)&&search.isConnected)search.click();});view.appendChild(button);}
+        // Keep the original detail-page return action and its page-world handler.
+        // Its form/control stays in place, including parser-owned form associations.
+        if(!host.document.querySelector('frameset')){
+          const original=Array.from(doc.querySelectorAll('input[type="button" i],input[type="submit" i],button,a[href]')).find(control=>
+            !control.closest(generated)&&/^戻る$/.test(clean(control.value||control.textContent)));
+          if(original){const button=doc.createElement('button');button.type='button';button.setAttribute('data-y3client-inventory-back','');button.textContent='戻る';button.addEventListener('click',()=>{if(currentDocument(primary)&&original.isConnected&&!original.disabled)original.click();});view.appendChild(button);}
+        }
       };
       function reconcile(){
         if(running)return state.merged;
-        if(!trusted(host)||!rootPath.test(host.location.pathname)||!host.document.querySelector('frameset')){invalidate();return false;}
+        if(!trusted(host)||!rootPath.test(host.location.pathname)||(!host.document.querySelector('frameset')&&host.document.body?.tagName!=='BODY')){invalidate();return false;}
         running=true;
         try{
           const frames=leafFrames();
@@ -1806,7 +1835,7 @@ enum LegacySiteSupport {
           if(lastReadySource&&submission>lastReadySource.submission){
             const matrixFresh=secondary.doc!==lastReadySource.document||sourceTable!==lastReadySource.table||matrixSignature!==lastReadySource.signature;
             const summaryFresh=primary.doc!==lastReadySource.primaryDocument||summarySignature!==lastReadySource.summarySignature||pair.summaryTables.length!==lastReadySource.summaryTables.length||pair.summaryTables.some((table,index)=>table!==lastReadySource.summaryTables[index]);
-            if(!matrixFresh||!summaryFresh){invalidate();return false;}
+            if(!matrixFresh||(!pair.standalone&&!summaryFresh)){invalidate();return false;}
           }
           const api=primary.win.__y3InventoryPresentation;
           if(!api){invalidate();return false;}
@@ -1848,6 +1877,14 @@ enum LegacySiteSupport {
       }
       host.__y3ClientInventoryMerge={version:1,reconcile,showTable};
       reconcile();
+      if(!host.document.querySelector('frameset')&&host.document.body){
+        let pending=false;
+        const observer=new host.MutationObserver(changes=>{
+          if(pending||!changes.some(change=>!(change.target.nodeType===1?change.target:change.target.parentElement)?.closest(generated)))return;
+          pending=true;host.setTimeout(()=>{pending=false;reconcile();},0);
+        });
+        observer.observe(host.document.body,{childList:true,subtree:true,characterData:true});
+      }
       if(document.readyState!=='complete')window.addEventListener('load',()=>{reconcile();host.setTimeout(reconcile,0);},{once:true});
     })();
     """#
@@ -1859,6 +1896,7 @@ enum LegacySiteSupport {
       const trusted = win => { try { return win.location.origin === origin; } catch (_) { return false; } };
       if (!trusted(window) || !document.querySelector('frameset')) return [];
       try { window.__y3ClientInventoryMerge?.reconcile(); } catch (_) {}
+      try { window.__y3ClientReportMerge?.reconcile(); } catch (_) {}
       const panes = [];
       const walk = (win, path, condition) => {
         if (!trusted(win) || path.length > 8 || panes.length >= 12) return;
@@ -1895,6 +1933,12 @@ enum LegacySiteSupport {
           }
           if (win.document.documentElement.hasAttribute('data-y3client-inventory-secondary')) {
             panes.push({path,kind:'controls',title:'元の在庫表'}); return;
+          }
+          if (win.document.documentElement.hasAttribute('data-y3client-report-primary')) {
+            panes.push({path,kind:'result',title:'検索結果'}); return;
+          }
+          if (win.document.documentElement.hasAttribute('data-y3client-report-secondary')) {
+            panes.push({path,kind:'controls',title:'検索内容とページ操作'}); return;
           }
           if (win.__y3ClientIsInventoryMetadata?.()) {
             panes.push({path,kind:'controls',title:'ページ操作'}); return;

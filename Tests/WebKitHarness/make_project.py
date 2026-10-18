@@ -36,6 +36,7 @@ def generate(app_source, output, simulator_swift_libraries=None):
     for filename in ["HarnessApp.swift", "WebKitRuntimeTests.swift"]:
         shutil.copyfile(harness / filename, sources / filename)
     shutil.copyfile(source, sources / "LegacySiteSupport.swift")
+    shutil.copyfile(app_source / "Y3Client" / "ReportPresentation.swift", sources / "ReportPresentation.swift")
     info = {
         "CFBundleDevelopmentRegion": "$(DEVELOPMENT_LANGUAGE)",
         "CFBundleExecutable": "$(EXECUTABLE_NAME)",
@@ -67,6 +68,7 @@ def generate(app_source, output, simulator_swift_libraries=None):
     for name, path, filetype in [
         ("appSource", "HarnessApp.swift", "sourcecode.swift"),
         ("legacySource", "LegacySiteSupport.swift", "sourcecode.swift"),
+        ("reportSource", "ReportPresentation.swift", "sourcecode.swift"),
         ("testSource", "WebKitRuntimeTests.swift", "sourcecode.swift"),
         ("info", "Info.plist", "text.plist.xml"),
     ]:
@@ -74,12 +76,12 @@ def generate(app_source, output, simulator_swift_libraries=None):
     for name, path, filetype in [("appProduct", "WKRuntimeHarness.app", "wrapper.application"),
                                   ("testProduct", "WKRuntimeTests.xctest", "wrapper.cfbundle")]:
         add(name, f'isa=PBXFileReference;explicitFileType={filetype};path={q(path)};sourceTree=BUILT_PRODUCTS_DIR;')
-    for name, reference in [("appBuild", "appSource"), ("legacyBuild", "legacySource"), ("testBuild", "testSource")]:
+    for name, reference in [("appBuild", "appSource"), ("legacyBuild", "legacySource"), ("reportBuild", "reportSource"), ("testBuild", "testSource")]:
         add(name, f'isa=PBXBuildFile;fileRef={identifier(reference)};')
-    add("sourceGroup", f'isa=PBXGroup;children={refs(["appSource", "legacySource", "testSource", "info"])};path=Sources;sourceTree="<group>";')
+    add("sourceGroup", f'isa=PBXGroup;children={refs(["appSource", "legacySource", "reportSource", "testSource", "info"])};path=Sources;sourceTree="<group>";')
     add("productGroup", f'isa=PBXGroup;children={refs(["appProduct", "testProduct"])};name=Products;sourceTree="<group>";')
     add("mainGroup", f'isa=PBXGroup;children={refs(["sourceGroup", "productGroup"])};sourceTree="<group>";')
-    for phase, builds in [("appSources", ["appBuild", "legacyBuild"]), ("testSources", ["testBuild"])]:
+    for phase, builds in [("appSources", ["appBuild", "legacyBuild", "reportBuild"]), ("testSources", ["testBuild"])]:
         add(phase, f'isa=PBXSourcesBuildPhase;buildActionMask=2147483647;files={refs(builds)};runOnlyForDeploymentPostprocessing=0;')
     for phase in ["appFrameworks", "testFrameworks"]:
         add(phase, 'isa=PBXFrameworksBuildPhase;buildActionMask=2147483647;files=();runOnlyForDeploymentPostprocessing=0;')
