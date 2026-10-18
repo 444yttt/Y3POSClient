@@ -78,7 +78,7 @@ Xcodeから実機へ直接インストールする場合は、`Y3Client.xcodepro
 
 実サイトでは、利用可能な46メニューすべての条件画面と、元のフォームから検索・抽出した後の表示をChromiumの390px幅で確認しました。チェック式の検索補助画面、選択内容の反映、日付カレンダー、販売CSVの取得も確認しています。対象期間や該当なし・ファイル未取得の項目は[点検記録](docs/MAINTENANCE.md)に記載しています。
 
-2026年10月17日、GitHub Actionsの標準macOS 15 runnerとXcode 16.4（16F6）で、iOS Simulatorビルド、実機向けRelease archive、App Store配布用IPAの署名・書き出し・署名検証が[成功しました](https://github.com/444yttt/Y3POSClient/actions/runs/39031655974)。バージョンは`1.4.0`、ビルド番号は`6`、ビルドしたcommitは`08453623e31eecc0a693ff80f3d152033455440c`です。同じ実行でiOS 18.5 SimulatorのWKWebViewテスト13件が成功し、同品番の更新待ち、選択欄の高さ、元のPOST、ページ送り、候補の選択上限、在庫値とサイズ対応、フォーカス、固定見出し、自動入力を架空データで確認しました。実サイトの確認と架空データによるWebKit検証は別の検証です。
+2026年10月18日、GitHub Actionsの標準macOS 15 runnerとXcode 16.4（16F6）で、iOS Simulatorビルド、実機向けRelease archive、App Store配布用IPAの署名・書き出し・署名検証が[成功しました](https://github.com/444yttt/Y3POSClient/actions/runs/39101072363)。バージョンは`1.4.1`、ビルド番号は`7`、ビルドしたcommitは`4f978b42907e647318e3cce1dcb9bff596ed975d`です。同じ実行でiOS 18.5 SimulatorのWKWebViewと表示引き継ぎ判定のテスト17件が成功しました。レシートの統合・元のPOSTと詳細ハンドラ・両側の更新待ち・単独在庫詳細を追加し、既存の検索・在庫・選択補助・自動入力も確認しました。実サイトでは実際のレシートと提供された2品番の在庫詳細を別に確認しています。実サイトの確認と架空データによるWebKit検証は別の検証です。
 
 署名検証15項目が通り、受け取り後もIPAのSHA256と埋め込みProfileを照合しました。IPAと検証結果はageで暗号化して保存しています。署名検証結果と取得方法は[CI_BUILD.md](docs/CI_BUILD.md#現在の実行結果)を参照してください。
 
