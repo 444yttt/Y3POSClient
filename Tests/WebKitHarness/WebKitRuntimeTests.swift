@@ -177,6 +177,30 @@ final class WebKitRuntimeTests: XCTestCase {
         XCTAssertEqual(rankingValues["submit3"], [" 表示 "])
         XCTAssertEqual(ranking.observer.failures, [])
         XCTAssertEqual(ranking.observer.scriptErrors, [])
+
+        let unnamed = FixtureSession(path: "/scripts/verona/print/prtz096_1.asp?mode=unnamed-page-num")
+        defer { unnamed.close() }
+        try await unnamed.waitForLoad()
+        try await eventually(unnamed.view, """
+            (()=>{__y3ClientReportMerge?.reconcile();return frames['summary-report']?.frames['receipt-data']?.document.querySelectorAll('[data-y3client-report-pages] button').length===3;})()
+            """)
+        _ = try await unnamed.view.evaluateJavaScript("""
+            (()=>{const doc=frames['summary-report'].frames['receipt-data'].document;
+              doc.querySelector('[data-y3client-report-pages] select').value='2';
+              Array.from(doc.querySelectorAll('[data-y3client-report-pages] button')).find(button=>button.getAttribute('aria-label')==='検索結果 表示').click();})()
+            """)
+        try await eventually(unnamed.view, """
+            (()=>{__y3ClientReportMerge.reconcile();return frames['summary-report']?.fixtureSummaryPost?.values?.token?.[0]==='FICTIONAL-SHOW'&&!!frames['summary-report']?.frames['receipt-data']?.document.querySelector('[data-y3client-report-combined]');})()
+            """)
+        let unnamedRequest = try await unnamed.view.evaluateJavaScript("frames['summary-report'].fixtureSummaryPost") as? [String: Any] ?? [:]
+        XCTAssertEqual(unnamedRequest["method"] as? String, "POST")
+        XCTAssertEqual(unnamedRequest["values"] as? [String: [String]], ["token": ["FICTIONAL-SHOW"], "PageNum": ["2"]])
+        let unnamedSources = try await unnamed.view.evaluateJavaScript("""
+            (()=>{const frame=frames['summary-report'].frames['receipt-header'];return frame.fixtureSummaryOriginals.every(o=>o.form.isConnected&&o.form.target===o.target&&o.form.action===o.action&&o.fields.every(f=>f.form===o.form))&&Array.from(frame.document.querySelectorAll('input[type="submit"]')).every(control=>!control.name);})()
+            """) as? Bool
+        XCTAssertEqual(unnamedSources, true)
+        XCTAssertEqual(unnamed.observer.failures, [])
+        XCTAssertEqual(unnamed.observer.scriptErrors, [])
     }
 
     func testConsumedResultFocusMovesToUniqueCombinedResult() {

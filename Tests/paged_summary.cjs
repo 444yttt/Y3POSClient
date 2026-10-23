@@ -59,8 +59,21 @@ const scripts=['viewportAndTouch','mobileRedesign','inventoryPresentation'].map(
    await page.waitForFunction(()=>frames['summary-report']?.fixtureSummaryPost?.values?.token?.[0]==='FICTIONAL-SHOW'&&frames['summary-report']?.frames['ranking-data']?.document.getElementById('ranking-original-table'));
    assert.deepEqual(await page.evaluate(()=>frames['summary-report'].fixtureSummaryPost),{method:'POST',values:{token:['FICTIONAL-SHOW'],PageNum:['2'],submit3:[' 表示 ']}});
    assert.equal(await ranking().evaluate(()=>top.__y3ClientReportMerge.classify(window)),null);
+   await page.goto(origin+base+'_1.asp?mode=unnamed-page-num');
+   await page.waitForFunction(()=>{__y3ClientReportMerge?.reconcile();return !!frames['summary-report']?.frames['receipt-data']?.document.querySelector('[data-y3client-report-combined]');});
+   assert.equal(await data().locator('[data-y3client-report-pages] button').count(),3);
+   assert.equal(await header().evaluate(()=>fixtureSummaryOriginals.every(o=>o.form.isConnected&&o.fields.every(f=>f.form===o.form))&&Array.from(document.querySelectorAll('input[type="submit"]')).every(control=>!control.name)),true);
+   await data().locator('[data-y3client-report-pages] select').selectOption('2');
+   for(const [title,token,number] of [['表示','FICTIONAL-SHOW','2'],['前へ','FICTIONAL-PREVIOUS','1'],['次へ','FICTIONAL-NEXT','2']]){
+    await data().getByRole('button',{name:'検索結果 '+title,exact:true}).click();
+    await page.waitForFunction(token=>{__y3ClientReportMerge?.reconcile();return frames['summary-report']?.fixtureSummaryPost?.values?.token?.[0]===token&&frames['summary-report']?.frames['receipt-data']?.document.querySelector('[data-y3client-report-combined]');},token);
+    assert.deepEqual(await page.evaluate(()=>frames['summary-report'].fixtureSummaryPost),{method:'POST',values:{token:[token],PageNum:[number]}});
+   }
+   await header().evaluate(()=>document.getElementById('summary-show').appendChild(document.querySelector('input[type="submit"]').cloneNode(true)));
+   await page.evaluate(()=>__y3ClientReportMerge.reconcile());
+   assert.equal(await data().getByRole('button',{name:'検索結果 表示',exact:true}).count(),0,'Ambiguous unnamed controls are never guessed');
    assert.deepEqual(errors,[]);await context.close();
   }
-  console.log(JSON.stringify({createdOnlyHeader:true,pageNumThreeForms:true,originalPostValues:true,originalTargets:true,aggregatePreserved:true,inlineRankingWithTwentyHiddenKeys:true,widths:[390,320]}));
+  console.log(JSON.stringify({createdOnlyHeader:true,pageNumThreeForms:true,originalPostValues:true,originalTargets:true,aggregatePreserved:true,inlineRankingWithTwentyHiddenKeys:true,unnamedPagerOriginalPost:true,ambiguousControlsIgnored:true,widths:[390,320]}));
  }finally{if(browser)await browser.close();server.kill();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

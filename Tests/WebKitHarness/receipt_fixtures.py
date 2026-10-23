@@ -17,6 +17,15 @@ def response(path, query='', method='GET', values=None):
     page = selected if selected in ['1', '2'] else '1'
     late = args.get('late', [''])[0]
     mode = args.get('mode', [''])[0]
+    if mode == 'unnamed-page-num':
+        mapped = dict(args)
+        mapped['mode'] = ['page-num']
+        content = response(path, urlencode(mapped, doseq=True), method, values)
+        if content is not None:
+            content = content.replace('mode=page-num', 'mode=unnamed-page-num')
+            for name in ['submit3', 'submit1', 'submit2']:
+                content = content.replace(f' name="{name}"', '')
+        return content
     if mode == 'inline-ranking':
         if path == BASE + '_1.asp':
             return f'''<!doctype html><html><head><title>架空ランキング</title></head><frameset rows="115,*">

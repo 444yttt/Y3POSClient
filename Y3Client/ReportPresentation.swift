@@ -27,8 +27,16 @@ enum ReportPresentation {
       const productHeader=frame=>/^prtz(?:370|450)$/.test(reportPath.exec(frame.path)?.[1].toLowerCase()||'');
       const productLabels=new Set(['品番','品番/商品','商品','商品名','カラー','サイズ','JANコード','副商品番号','地区']);
       const pageControl=doc=>doc.querySelector('select[name="PgSelect" i],select[name="PageNum" i],select[name="PageNo" i],select[name="PageSelect" i]');
-      const pageButtons=doc=>[['hyouzi','表示'],['submit3','表示'],['Front','前へ'],['submit1','前へ'],['Back','次へ'],['submit2','次へ']]
-        .map(([name,title])=>({name,title,control:doc.querySelector('input[name="'+name+'" i],button[name="'+name+'" i]')})).filter(item=>item.control);
+      const pageButtons=doc=>{
+        const select=pageControl(doc),clickable=Array.from(doc.querySelectorAll('input[type="submit" i],input[type="button" i],button'));
+        return [[['hyouzi','submit3'],'表示','表示'],[['Front','submit1'],'前へ','前ページ'],[['Back','submit2'],'次へ','次ページ']]
+          .map(([aliases,title,label])=>{
+            const named=clickable.filter(control=>aliases.some(name=>control.name.toLowerCase()===name.toLowerCase()));
+            const fallback=!named.length&&select?clickable.filter(control=>!control.name&&clean(control.value||control.textContent)===label):[];
+            const candidates=named.length?named:fallback;
+            return candidates.length===1?{name:candidates[0].name||label,title,control:candidates[0]}:null;
+          }).filter(Boolean);
+      };
       const pagerTable=(table,doc)=>{
         const select=pageControl(doc),buttons=pageButtons(doc).map(item=>item.control);
         const controls=Array.from(table.querySelectorAll('input,select,button,textarea')).filter(control=>control.type!=='hidden');
