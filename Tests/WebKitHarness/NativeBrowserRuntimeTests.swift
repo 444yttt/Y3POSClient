@@ -191,9 +191,10 @@ final class NativeBrowserRuntimeTests: XCTestCase {
         _ = try await session.browser.webView.evaluateJavaScript("frames[0].document.querySelector('input[name=ken]').click()")
         try await eventually(session, {
             guard let selected = session.browser.framePanes.first(where: { $0.id == session.browser.selectedFramePaneID }),
-                  selected.kind == .result else { return false }
+                  selected.kind == .result,
+                  session.browser.framePanes.filter({ $0.kind == .result }).count == 3 else { return false }
             return try await session.browser.webView.evaluateJavaScript("""
-                (()=>{const result=frames['prtz030_2'];return result?.fixtureNativeRequest?.method==='POST'&&result.frames[0]?.fixtureNativeDataReady===true;})()
+                (()=>{const result=frames['prtz030_2'];return result?.fixtureNativeRequest?.method==='POST'&&result.frames.length===3&&Array.from(result.frames).every(win=>win.fixtureNativeDataReady===true);})()
                 """) as? Bool == true
         })
         let request = try await session.browser.webView.evaluateJavaScript("frames['prtz030_2'].fixtureNativeRequest") as? [String: Any] ?? [:]
