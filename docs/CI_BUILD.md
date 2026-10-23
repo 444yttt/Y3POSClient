@@ -20,11 +20,13 @@ App Store向けIPAは、ファイルをiPhoneへ渡すだけではインスト�
 
 ## 現在の実行結果
 
-2026年10月18日の[署名ビルド](https://github.com/444yttt/Y3POSClient/actions/runs/39101072363)で、レシート結果の統合と単独在庫詳細を修正した版のSimulatorビルド、実機向けRelease archive、App Store配布用IPAの書き出しと署名検証が成功しました。ビルドしたcommitは`4f978b42907e647318e3cce1dcb9bff596ed975d`、バージョンは`1.4.1`、ビルド番号は`7`です。既存の専用ProfileとP12を使用し、署名Secrets・配布方式は変更していません。
+2026年10月23日の[署名ビルド](https://github.com/444yttt/Y3POSClient/actions/runs/39937599343)で、全拠点在庫・売上日報・結果の分類・ページ操作を修正した版のSimulatorビルド、実機向けRelease archive、App Store配布用IPAの書き出しと署名検証が成功しました。ビルドしたcommitは`dbc76485fe17158970c00ce6802fa3cc6912f81d`、バージョンは`1.4.2`、ビルド番号は`8`です。既存の専用ProfileとP12を使用し、署名Secrets・配布方式は変更していません。
 
-同じ実行でiOS 18.5 SimulatorのWKWebViewと表示引き継ぎ判定のテスト17件が成功しました。レシートの混在した検索内容の行、元のPOST・詳細ハンドラ、両側の更新待ち、単独在庫詳細のサイズ別UIを追加し、既存の検索・在庫・選択補助・自動入力の回帰も確認しました。[テスト構成と範囲](../Tests/WebKitHarness/README.md)を参照してください。実サイトではレシートと提供された品番の在庫詳細を別に確認しました。1.4.0での46メニューの点検と今回の検証範囲は、[点検記録](MAINTENANCE.md)で区別しています。
+同じ実行で、Xcode 16.4・iPhone 16 Pro／iOS 18.5 Simulatorのテスト22件が成功しました。実際のBrowserModelを使う4件と、WKWebView上の表示・元POST・在庫・自動入力等の18件です。日報の3画面と200msの高さ更新、全拠点在庫の検索・詳細・単位切替・戻る、検索内容と実データの分類、6.5秒後のHTML置換からの自動復旧を確認しました。画面サイズは親フレームの座標で照合し、元のFRAME境界幅を含めて表示領域を満たすことを検証しています。[テスト構成と範囲](../Tests/WebKitHarness/README.md)を参照してください。
 
-Profileの有効期限は`2027-09-28T14:59:37Z`です。arm64の署名、Bundle ID、証明書、Entitlements、Profileの一致と期限など15項目の検証が通り、受け取り後もIPAのSHA256と埋め込みProfileを照合しました。Extensionはありません。iPhone実機での動作、AirPrint、共有画面は未確認です。
+実サイトでは[46項目を再点検](MAINTENANCE-2026-10-23.md)し、帳票33項目・CSV／Excel取得2項目・明示的な該当なし8項目・サーバー設定不足1項目・出力未確認2項目を区別しました。元の詳細操作11件とページ再取得3件も確認しました。以前の点検の不足と今回の修正は[点検記録](MAINTENANCE.md)に記載しています。
+
+Profileの有効期限は`2027-09-28T14:59:37Z`です。arm64の署名、Bundle ID、証明書、Entitlements、Profileの一致と期限など15項目の検証が通り、受け取り後の9項目の照合も成功しました。Extensionはありません。IPAは510,992バイト、SHA256は`d1cea25f12708b25b6930159d4301b569ef586ae7c7b738dedbfc7d7e303f558`です。個人用Driveへ所有者限定で保存し、再取得したファイルの一致を確認しました。iPhone実機での動作、AirPrint、共有画面は未確認です。
 
 既存署名環境から`BUILD_CERTIFICATE_BASE64`、`P12_PASSWORD`、`KEYCHAIN_PASSWORD`、`APPLE_TEAM_ID`、`ASC_KEY_ID`、`ASC_ISSUER_ID`、`ASC_PRIVATE_KEY`を登録し、専用Profileを加えて8つのSecretsを準備済みです。[専用Profileの登録実行](https://github.com/444yttt/Y3POSClient/actions/runs/38135082128)でも、既存P12との一致を検証しました。既存マニュアル用Profileは流用していません。今回のビルドでは登録済みProfileを使用し、Profile作成APIは呼び出していません。
 
