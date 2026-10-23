@@ -252,7 +252,11 @@ final class NativeBrowserRuntimeTests: XCTestCase {
         let session = NativeBrowserSession(path: "/scripts/verona/print/prtz094_2.asp?scenario=pane-roles")
         defer { session.close() }
         try await eventually(session, {
-            guard session.browser.selectedFramePaneID == "2" else { return false }
+            guard session.browser.selectedFramePaneID == "2",
+                  session.browser.framePanes.first(where: { $0.id == "0" })?.kind == .navigation,
+                  session.browser.framePanes.first(where: { $0.id == "1" })?.kind == .controls,
+                  session.browser.framePanes.first(where: { $0.id == "2" })?.kind == .result,
+                  session.browser.framePanes.first(where: { $0.id == "3" })?.kind == .result else { return false }
             return try await session.browser.webView.evaluateJavaScript("\(nativePaneFillsViewport("frames[2]"))&&frames[2].document.getElementById('role-real-data').getBoundingClientRect().height>0") as? Bool == true
         })
         XCTAssertEqual(session.browser.framePanes.first(where: { $0.id == "0" })?.kind, .navigation)
@@ -278,6 +282,7 @@ final class NativeBrowserRuntimeTests: XCTestCase {
         defer { empty.close() }
         try await eventually(empty, {
             guard empty.browser.selectedFramePaneID == "1",
+                  empty.browser.framePanes.first(where: { $0.id == "0" })?.kind == .navigation,
                   empty.browser.framePanes.first(where: { $0.id == "1" })?.kind == .result else { return false }
             return try await empty.browser.webView.evaluateJavaScript("\(nativePaneFillsViewport("frames[1]"))&&frames[1].document.getElementById('role-no-data').getBoundingClientRect().height>0") as? Bool == true
         })
