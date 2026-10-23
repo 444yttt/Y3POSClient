@@ -19,11 +19,21 @@ enum ReportPresentation {
       let host;
       try{host=window.top;if(!trusted(host)||!reportPath.test(host.location.pathname)||!host.document.querySelector('frameset'))return;}catch(_){return;}
       if(host.__y3ClientReportMerge){host.__y3ClientReportMerge.reconcile();return;}
-      const generated='[data-y3client-report-combined]';
+      const generated='[data-y3client-report-combined],[data-y3client-all-locations-view]';
       const clean=value=>String(value??'').normalize('NFKC').replace(/\s+/g,' ').trim();
       const key=value=>clean(value).replace(/[\s:：]/g,'');
       const created=/^(作成日付|作成日時|更新日時|更新日付|更新日)$/;
       const labels=new Set(['店舗','店舗名','日付','期間','業務区分','年度','シーズン','カテゴリー','カテゴリ','ブランド','サブブランド','アイテム','担当者','レシートNo','レシートNo.','レシートNO','レシートNO.','JAN']);
+      const productHeader=frame=>/^prtz(?:370|450)$/.test(reportPath.exec(frame.path)?.[1].toLowerCase()||'');
+      const productLabels=new Set(['品番','品番/商品','商品','商品名','カラー','サイズ','JANコード','副商品番号','地区']);
+      const pageControl=doc=>doc.querySelector('select[name="PgSelect" i],select[name="PageNum" i],select[name="PageNo" i],select[name="PageSelect" i]');
+      const pageButtons=doc=>[['hyouzi','表示'],['submit3','表示'],['Front','前へ'],['submit1','前へ'],['Back','次へ'],['submit2','次へ']]
+        .map(([name,title])=>({name,title,control:doc.querySelector('input[name="'+name+'" i],button[name="'+name+'" i]')})).filter(item=>item.control);
+      const pagerTable=(table,doc)=>{
+        const select=pageControl(doc),buttons=pageButtons(doc).map(item=>item.control);
+        const controls=Array.from(table.querySelectorAll('input,select,button,textarea')).filter(control=>control.type!=='hidden');
+        return table.rows.length<=3&&select&&table.contains(select)&&controls.length>0&&controls.every(control=>control===select||buttons.includes(control));
+      };
       const state={primary:null,secondary:null,view:null,signature:'',readySubmission:0};
       let accepted=null,ownPager=null,running=false,scheduled=false;
       const watched=new WeakSet();
@@ -61,33 +71,44 @@ enum ReportPresentation {
       };
       const tables=doc=>Array.from(doc.querySelectorAll('table')).filter(table=>!table.closest(generated)&&!table.querySelector('table'));
       const metadata=frame=>{
-        if(frame.win.__y3ClientHasInventoryMetrics?.()||frame.win.__y3ClientIsInventoryMetadata?.()||
+        if(frame.win.__y3ClientHasInventoryMetrics?.()||(!productHeader(frame)&&frame.win.__y3ClientIsInventoryMetadata?.())||
           frame.doc.querySelector('input[type="text" i],input[type="search" i],input[type="date" i],input[type="password" i],textarea'))return null;
         const fields=[],sources=[];
         for(const table of tables(frame.doc)){
           const rows=Array.from(table.rows);
-          if(rows.length<2||rows.length>40||table.querySelector('input:not([type="hidden" i]),select,button,textarea'))continue;
-          const entries=[];
+          if(rows.length<1||rows.length>40||table.querySelector('input:not([type="hidden" i]),select,button,textarea'))continue;
+          const entries=[];let unmapped=false;
           for(const row of rows){
             const cells=Array.from(row.cells);
-            if(cells.length<2||cells.length>12||cells.length%2)continue;
+            if(cells.length<2||!clean(row.textContent))continue;
+            if(cells.length>12||cells.length%2){unmapped=true;break;}
+            let recognized=0;
             for(let index=0;index<cells.length;index+=2){
               const name=key(cells[index].textContent);
-              if(!labels.has(name)&&!created.test(name))continue;
+              if(!labels.has(name)&&!created.test(name)&&!(productHeader(frame)&&productLabels.has(name))){if(name||clean(cells[index+1].textContent))unmapped=true;continue;}
+              recognized++;
               entries.push({label:clean(cells[index].textContent),key:name,value:clean(cells[index+1].textContent)});
             }
+            if(!recognized)unmapped=true;
           }
-          if(entries.length>=2){fields.push(...entries);sources.push(table);}
+          if(entries.length&&!unmapped){fields.push(...entries);sources.push(table);}
         }
-        if(!fields.some(field=>created.test(field.key)&&field.value)||!fields.some(field=>/^(店舗|店舗名|日付|期間)$/.test(field.key)&&field.value))return null;
-        // A receipt table containing data is never consumed as a condition header.
-        if(tables(frame.doc).some(table=>!sources.includes(table)&&table.rows.length>3&&!table.querySelector('input,select,button,textarea')))return null;
+        const identifiesQuery=fields.some(field=>/^(店舗|店舗名|日付|期間)$/.test(field.key)&&field.value)||
+          (productHeader(frame)&&fields.some(field=>/^(品番|品番\/商品|商品)$/.test(field.key)&&field.value));
+        const verifiedPager=!!pageControl(frame.doc)&&pageButtons(frame.doc).length>0;
+        if(!fields.some(field=>created.test(field.key)&&field.value)||(!identifiesQuery&&!verifiedPager))return null;
+        // Hidden fields and row actions belong to real reports too. Only a verified
+        // pager may accompany metadata; an inline data table keeps this leaf a result.
+        if(tables(frame.doc).some(table=>!sources.includes(table)&&table.rows.length>=2&&!pagerTable(table,frame.doc)))return null;
         return {frame,fields,sources};
       };
       const data=frame=>{
         if(frame.win.__y3ClientHasInventoryMetrics?.()||frame.win.__y3ClientIsInventoryMetadata?.()||frame.doc.documentElement.hasAttribute('data-y3client-inventory-primary'))return null;
+        // A datepicker in the still-open search frame is not another report result.
+        if(frame.doc.querySelector('input[type="text" i],input[type="search" i],input[type="date" i],input[type="password" i],textarea'))return null;
         const candidates=tables(frame.doc).filter(table=>table.rows.length>=2&&
           !table.hasAttribute('data-y3client-report-summary')&&!table.closest('[data-y3client-form-table],[data-y3client-search-table],[data-y3client-pager-table]')&&
+          !table.closest('#ui-datepicker-div,.ui-datepicker,.ui-datepicker-calendar,[role="dialog"],[role="grid"]')&&
           !table.querySelector('input[type="text" i],input[type="password" i],textarea'));
         if(!candidates.length){
           const message=clean(Array.from(frame.doc.body.childNodes).filter(node=>!node.matches?.(generated)&&!node.matches?.('script,style')).map(node=>node.textContent).join(' '));
@@ -129,7 +150,7 @@ enum ReportPresentation {
         `;(doc.head||doc.documentElement).appendChild(style);
       };
       const pager=(header,doc)=>{
-        const original=header.frame.doc.querySelector('select[name="PgSelect" i]');
+        const original=pageControl(header.frame.doc);
         if(!original)return null;
         const section=node(doc,'div','data-y3client-report-pages'),label=node(doc,'label',null,'ページ');
         const select=node(doc,'select');select.setAttribute('aria-label','検索結果のページ');
@@ -137,8 +158,7 @@ enum ReportPresentation {
         label.appendChild(select);section.appendChild(label);
         const max=header.frame.doc.querySelector('input[name="PgMax" i]');
         if(max&&/^\d{1,6}$/.test(max.value))section.appendChild(node(doc,'span',null,'/ '+max.value));
-        for(const [name,title] of [['hyouzi','表示'],['Front','前へ'],['Back','次へ']]){
-          const control=header.frame.doc.querySelector('input[name="'+name+'" i],button[name="'+name+'" i]');if(!control)continue;
+        for(const {title,control} of pageButtons(header.frame.doc)){
           const button=node(doc,'button',null,title);button.type='button';button.disabled=control.disabled;button.setAttribute('aria-label','検索結果 '+title);
           button.addEventListener('click',()=>{
             if(!current(header.frame)||!original.isConnected||!control.isConnected||control.disabled)return;
@@ -155,7 +175,8 @@ enum ReportPresentation {
       const build=(header,result)=>{
         const doc=result.frame.doc,section=node(doc,'section','data-y3client-report-combined');
         section.appendChild(node(doc,'h1',null,'検索結果'));
-        for(const field of header.fields.filter(field=>/^(店舗|店舗名|日付|期間)$/.test(field.key)&&field.value)){
+        for(const field of header.fields.filter(field=>(/^(店舗|店舗名|日付|期間)$/.test(field.key)||
+          (productHeader(header.frame)&&/^(品番|品番\/商品|商品)$/.test(field.key)))&&field.value)){
           // 99:59:59 is the site's end-of-day query sentinel, not a valid clock time.
           const display=field.value.replace(/ 00:00:00(?=\s*[~〜～])/g,'').replace(/ 99:59:59/g,' 終日');
           section.appendChild(node(doc,'p','data-y3client-report-caption',display));
@@ -182,10 +203,10 @@ enum ReportPresentation {
             const retainedPagerHeader=ownPager?.submission===submission&&ownPager.header===header.frame.doc;
             if((!freshHeader&&!retainedPagerHeader)||!freshResult){invalidate();return false;}
           }
-          const originalPage=header.frame.doc.querySelector('select[name="PgSelect" i]');
+          const originalPage=pageControl(header.frame.doc);
           const pagerState=[originalPage?.value,originalPage?Array.from(originalPage.options).map(option=>[option.value,option.text,option.disabled]):[],
             header.frame.doc.querySelector('input[name="PgMax" i]')?.value,
-            ['hyouzi','Front','Back'].map(name=>header.frame.doc.querySelector('input[name="'+name+'" i],button[name="'+name+'" i]')?.disabled)];
+            pageButtons(header.frame.doc).map(({name,control})=>[name,control.disabled])];
           const signature=JSON.stringify([header.fields,result.signature,pagerState]);
           if(state.primary!==result.frame.doc||state.secondary!==header.frame.doc||state.signature!==signature||!state.view?.isConnected){
             const open=state.view?.querySelector('details')?.open||false;
@@ -201,7 +222,13 @@ enum ReportPresentation {
           return true;
         }catch(_){invalidate();return false;}finally{running=false;}
       }
-      host.__y3ClientReportMerge={reconcile};reconcile();
+      const classify=win=>{
+        try{
+          if(!trusted(win)||reportPath.exec(win.location.pathname)?.[1].toLowerCase()!==reportPath.exec(host.location.pathname)?.[1].toLowerCase())return null;
+          return metadata({win,doc:win.document,path:win.location.pathname})?'metadata':null;
+        }catch(_){return null;}
+      };
+      host.__y3ClientReportMerge={reconcile,classify};reconcile();
     })();
     """#
 }

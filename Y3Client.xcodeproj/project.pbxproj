@@ -16,6 +16,7 @@
 		A10000000000000000000007 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* Assets.xcassets */; };
 		A10000000000000000000008 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000B /* KeychainStore.swift */; };
 		A1000000000000000000000A /* ReportPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* ReportPresentation.swift */; };
+		A1000000000000000000000B /* PageSupportPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* PageSupportPresentation.swift */; };
 		A10000000000000000000009 /* LegacySiteSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* LegacySiteSupport.swift */; };
 /* End PBXBuildFile section */
 
@@ -32,6 +33,7 @@
 		A2000000000000000000000A /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		A2000000000000000000000B /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		A2000000000000000000000D /* ReportPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportPresentation.swift; sourceTree = "<group>"; };
+		A2000000000000000000000E /* PageSupportPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageSupportPresentation.swift; sourceTree = "<group>"; };
 		A2000000000000000000000C /* LegacySiteSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LegacySiteSupport.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -67,6 +69,7 @@
 				A2000000000000000000000B /* KeychainStore.swift */,
 				A2000000000000000000000C /* LegacySiteSupport.swift */,
 				A2000000000000000000000D /* ReportPresentation.swift */,
+				A2000000000000000000000E /* PageSupportPresentation.swift */,
 				A20000000000000000000007 /* Assets.xcassets */,
 				A20000000000000000000008 /* Info.plist */,
 			);
@@ -161,6 +164,7 @@
 				A10000000000000000000008 /* KeychainStore.swift in Sources */,
 					A10000000000000000000009 /* LegacySiteSupport.swift in Sources */,
 				A1000000000000000000000A /* ReportPresentation.swift in Sources */,
+				A1000000000000000000000B /* PageSupportPresentation.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -229,7 +233,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -239,7 +243,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.4.1;
+				MARKETING_VERSION = 1.4.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ayato.y3posclient;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -256,7 +260,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Y3Client/Info.plist;
@@ -265,7 +269,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.4.1;
+				MARKETING_VERSION = 1.4.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ayato.y3posclient;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

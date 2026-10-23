@@ -72,11 +72,12 @@ fixtures.set(secondary + '/dataspider/trigger/unrecognized.asp', fixtures.get(se
     assert.deepEqual(panes.map(item => item.kind), ['condition', 'result', 'result', 'result']);
     assert.equal(await page.locator('frameset').first().getAttribute('rows'), '180,*');
     assert.equal(await focus([1, 1]), true);
-    assert.deepEqual(await page.evaluate(() => [document.querySelector('frameset').rows, frames[1].document.querySelector('frameset').rows, frames[1].document.querySelector('frameset[cols]').cols]), ['0,*', '0,*', '*,0']);
+    assert.deepEqual(await page.evaluate(() => [document.querySelector('frameset').rows, frames[1].document.querySelector('frameset').rows, frames[1].document.querySelector('frameset frameset[cols]').cols]), ['0,*', '0,*', '*,0']);
+    assert.equal(await page.evaluate(() => frames[1].innerHeight >= 800 && frames[1].frames[1].innerHeight >= 800), true, 'Focused result remains visible with rows and cols both set');
     assert.equal(await page.evaluate(() => fixtureRootFrames.every((node, i) => node === document.querySelectorAll('frame')[i]) && fixtureForm === frames[0].document.forms[0] && fixtureResultDocument === frames[1].frames[1].document), true);
     assert.match(await page.evaluate(() => document.cookie), /synthetic=one/);
     assert.equal(await focus(null), true);
-    assert.deepEqual(await page.evaluate(() => [document.querySelector('frameset').rows, frames[1].document.querySelector('frameset').rows, frames[1].document.querySelector('frameset[cols]').cols]), ['180,*', '60%,*', '*,40%']);
+    assert.deepEqual(await page.evaluate(() => [document.querySelector('frameset').rows, frames[1].document.querySelector('frameset').rows, frames[1].document.querySelector('frameset frameset[cols]').cols]), ['180,*', '60%,*', '*,40%']);
     const condition = page.frames().find(frame => frame.name() === 'prtz030_1_1');
     assert.equal(await condition.evaluate(() => document.documentElement.scrollWidth <= 390), true);
     const result = page.frames().find(frame => frame.name() === 'prtz030_2_2');

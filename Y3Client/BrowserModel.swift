@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import Combine
 import UIKit
 import WebKit
@@ -27,6 +28,16 @@ enum ClientSheet: Identifiable {
         case .settings: return "settings"
         case .download(let file): return file.id.uuidString
         }
+    }
+}
+
+// WKUserContentController retains its handlers; keep the model reference weak.
+@MainActor
+private final class PageStructureMessageHandler: NSObject, WKScriptMessageHandler {
+    weak var owner: BrowserModel?
+    init(owner: BrowserModel) { self.owner = owner }
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        owner?.pageStructureChanged(message)
     }
 }
 
@@ -72,6 +83,7 @@ final class BrowserModel: NSObject, ObservableObject {
     private var framedViews: Set<ObjectIdentifier> = []
     private var focusedPanePaths: [ObjectIdentifier: [Int]] = [:]
     private var frameDiscoveryTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
+    private var pageStructureTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
     private var framePaneEpochs: [ObjectIdentifier: Int] = [:]
     private var frameFocusRevisions: [ObjectIdentifier: Int] = [:]
     private var initialFrameFocusApplied: Set<ObjectIdentifier> = []
@@ -111,6 +123,12 @@ final class BrowserModel: NSObject, ObservableObject {
 
     private func configure(_ view: WKWebView) {
         let controller = view.configuration.userContentController
+        let bootstrap = PageSupportPresentation.bootstrap
+        if !controller.userScripts.contains(where: { $0.source == bootstrap }) {
+            controller.add(PageStructureMessageHandler(owner: self), name: PageSupportPresentation.messageName)
+            controller.addUserScript(WKUserScript(source: bootstrap,
+                injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        }
         if !controller.userScripts.contains(where: { $0.source == LegacySiteSupport.viewportAndTouch }) {
             controller.addUserScript(WKUserScript(source: LegacySiteSupport.viewportAndTouch,
                 injectionTime: .atDocumentEnd, forMainFrameOnly: false))
@@ -141,6 +159,26 @@ final class BrowserModel: NSObject, ObservableObject {
             view.observe(\.canGoBack, options: [.new]) { view, change in refresh(view, change) },
             view.observe(\.canGoForward, options: [.new]) { view, change in refresh(view, change) }
         ]
+    }
+
+    fileprivate func pageStructureChanged(_ message: WKScriptMessage) {
+        // The page may only announce a structural change. Never accept site data or commands.
+        guard message.name == PageSupportPresentation.messageName,
+              let body = message.body as? NSNumber, CFGetTypeID(body) == CFBooleanGetTypeID(), body.boolValue,
+              let frameURL = message.frameInfo.request.url, URLPolicy.isTrusted(frameURL),
+              let view = message.webView, view === webView || popups.contains(where: { $0.webView === view }),
+              let url = view.url, URLPolicy.isTrusted(url), !isResetting else { return }
+        let id = ObjectIdentifier(view)
+        let epoch = framePaneEpochs[id] ?? 0
+        pageStructureTasks[id]?.cancel()
+        pageStructureTasks[id] = Task { @MainActor [weak self, weak view] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled, let self, let view, !self.isResetting,
+                  (self.framePaneEpochs[id] ?? 0) == epoch,
+                  let url = view.url, URLPolicy.isTrusted(url) else { return }
+            self.pageStructureTasks.removeValue(forKey: id)
+            self.scheduleFrameDiscovery(in: view, waitForLateResults: true)
+        }
     }
 
     func start() {
@@ -528,6 +566,7 @@ final class BrowserModel: NSObject, ObservableObject {
     private func clearFramePanes(in view: WKWebView) {
         let id = ObjectIdentifier(view)
         frameDiscoveryTasks.removeValue(forKey: id)?.cancel()
+        pageStructureTasks.removeValue(forKey: id)?.cancel()
         paneLists.removeValue(forKey: id)
         framedViews.remove(id)
         focusedPanePaths.removeValue(forKey: id)

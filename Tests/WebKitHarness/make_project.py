@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import json
 import plistlib
 import shutil
 from pathlib import Path
@@ -11,6 +12,27 @@ from xml.sax.saxutils import quoteattr
 
 def identifier(value):
     return hashlib.sha256(value.encode()).hexdigest()[:24].upper()
+
+
+PRODUCTION_ORIGIN = "https://adidas-y3.poscmcloud.jp:15505"
+FIXTURE_ORIGIN = "http://127.0.0.1:17865"
+
+
+def fixture_source(path):
+    """Keep shipping behavior, changing only the test host's trusted origin."""
+    original = path.read_bytes().decode("utf-8")
+    text = original.replace(PRODUCTION_ORIGIN, FIXTURE_ORIGIN)
+    if path.name == "URLPolicy.swift":
+        substitutions = {
+            'static let host = "adidas-y3.poscmcloud.jp"': 'static let host = "127.0.0.1"',
+            'parts.scheme?.lowercased() == "https"': 'parts.scheme?.lowercased() == "http"',
+            'parts.port == 15505': 'parts.port == 17865',
+        }
+        for before, after in substitutions.items():
+            if text.count(before) != 1:
+                raise SystemExit("URLPolicy fixture substitution no longer matches the shipping policy")
+            text = text.replace(before, after, 1)
+    return original, text
 
 
 def generate(app_source, output, simulator_swift_libraries=None):
@@ -33,10 +55,18 @@ def generate(app_source, output, simulator_swift_libraries=None):
         raise SystemExit("Harness output must be an empty directory")
     sources = output / "Sources"
     sources.mkdir()
-    for filename in ["HarnessApp.swift", "WebKitRuntimeTests.swift"]:
+    for filename in ["HarnessApp.swift", "WebKitRuntimeTests.swift", "NativeBrowserRuntimeTests.swift"]:
         shutil.copyfile(harness / filename, sources / filename)
-    shutil.copyfile(source, sources / "LegacySiteSupport.swift")
-    shutil.copyfile(app_source / "Y3Client" / "ReportPresentation.swift", sources / "ReportPresentation.swift")
+    shipping_names = ["LegacySiteSupport.swift", "BrowserModel.swift", "URLPolicy.swift", "KeychainStore.swift"]
+    shipping_names += [path.name for path in sorted((app_source / "Y3Client").glob("*Presentation.swift"))]
+    shipping_names = list(dict.fromkeys(shipping_names))
+    manifest = {}
+    for filename in shipping_names:
+        original, substituted = fixture_source(app_source / "Y3Client" / filename)
+        (sources / filename).write_text(substituted, encoding="utf-8")
+        manifest[filename] = {"shippingSHA256": hashlib.sha256(original.encode()).hexdigest(),
+                              "fixtureSHA256": hashlib.sha256(substituted.encode()).hexdigest()}
+    (output / "source-manifest.json").write_text(json.dumps({"substitution": "loopback fixture origin only", "sources": manifest}, indent=2) + "\n")
     info = {
         "CFBundleDevelopmentRegion": "$(DEVELOPMENT_LANGUAGE)",
         "CFBundleExecutable": "$(EXECUTABLE_NAME)",
@@ -65,23 +95,23 @@ def generate(app_source, output, simulator_swift_libraries=None):
     def refs(names):
         return "(" + ",".join(identifier(name) for name in names) + ",)"
 
-    for name, path, filetype in [
-        ("appSource", "HarnessApp.swift", "sourcecode.swift"),
-        ("legacySource", "LegacySiteSupport.swift", "sourcecode.swift"),
-        ("reportSource", "ReportPresentation.swift", "sourcecode.swift"),
-        ("testSource", "WebKitRuntimeTests.swift", "sourcecode.swift"),
-        ("info", "Info.plist", "text.plist.xml"),
-    ]:
+    shipping_refs = [("shippingSource:" + filename, filename, "sourcecode.swift") for filename in shipping_names]
+    file_references = [("appSource", "HarnessApp.swift", "sourcecode.swift"),
+                       ("testSource", "WebKitRuntimeTests.swift", "sourcecode.swift"),
+                       ("nativeTestSource", "NativeBrowserRuntimeTests.swift", "sourcecode.swift"),
+                       ("info", "Info.plist", "text.plist.xml")] + shipping_refs
+    for name, path, filetype in file_references:
         add(name, f'isa=PBXFileReference;lastKnownFileType={filetype};path={q(path)};sourceTree="<group>";')
     for name, path, filetype in [("appProduct", "WKRuntimeHarness.app", "wrapper.application"),
                                   ("testProduct", "WKRuntimeTests.xctest", "wrapper.cfbundle")]:
         add(name, f'isa=PBXFileReference;explicitFileType={filetype};path={q(path)};sourceTree=BUILT_PRODUCTS_DIR;')
-    for name, reference in [("appBuild", "appSource"), ("legacyBuild", "legacySource"), ("reportBuild", "reportSource"), ("testBuild", "testSource")]:
+    shipping_builds = [("shippingBuild:" + filename, "shippingSource:" + filename) for filename in shipping_names]
+    for name, reference in [("appBuild", "appSource"), ("testBuild", "testSource"), ("nativeTestBuild", "nativeTestSource")] + shipping_builds:
         add(name, f'isa=PBXBuildFile;fileRef={identifier(reference)};')
-    add("sourceGroup", f'isa=PBXGroup;children={refs(["appSource", "legacySource", "reportSource", "testSource", "info"])};path=Sources;sourceTree="<group>";')
+    add("sourceGroup", f'isa=PBXGroup;children={refs([name for name, _, _ in file_references])};path=Sources;sourceTree="<group>";')
     add("productGroup", f'isa=PBXGroup;children={refs(["appProduct", "testProduct"])};name=Products;sourceTree="<group>";')
     add("mainGroup", f'isa=PBXGroup;children={refs(["sourceGroup", "productGroup"])};sourceTree="<group>";')
-    for phase, builds in [("appSources", ["appBuild", "legacyBuild", "reportBuild"]), ("testSources", ["testBuild"])]:
+    for phase, builds in [("appSources", ["appBuild"] + [name for name, _ in shipping_builds]), ("testSources", ["testBuild", "nativeTestBuild"])]:
         add(phase, f'isa=PBXSourcesBuildPhase;buildActionMask=2147483647;files={refs(builds)};runOnlyForDeploymentPostprocessing=0;')
     for phase in ["appFrameworks", "testFrameworks"]:
         add(phase, 'isa=PBXFrameworksBuildPhase;buildActionMask=2147483647;files=();runOnlyForDeploymentPostprocessing=0;')

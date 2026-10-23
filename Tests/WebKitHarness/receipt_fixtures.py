@@ -13,10 +13,52 @@ def shell(body, script=''):
 
 def response(path, query='', method='GET', values=None):
     args = parse_qs(query)
-    selected = (values or {}).get('PgSelect', args.get('page', ['1']))[-1]
+    selected = (values or {}).get('PgSelect', (values or {}).get('PageNum', args.get('page', ['1'])))[-1]
     page = selected if selected in ['1', '2'] else '1'
     late = args.get('late', [''])[0]
     mode = args.get('mode', [''])[0]
+    if mode == 'inline-ranking':
+        if path == BASE + '_1.asp':
+            return f'''<!doctype html><html><head><title>架空ランキング</title></head><frameset rows="115,*">
+            <frame name="summary-condition" src="{BASE}_1_1.asp?mode=page-num"><frame name="summary-report" src="{BASE}_2.asp?mode=inline-ranking"></frameset></html>'''
+        if path == BASE + '_2.asp':
+            request = json.dumps({'method': method, 'values': values or {}})
+            return f'''<!doctype html><html><head><title>架空ランキング</title><script>window.fixtureSummaryPost={request};</script></head>
+            <frameset rows="*"><frame name="ranking-data" src="{BASE}_2_2.asp?mode=inline-ranking&page={page}"></frameset></html>'''
+        if path == BASE + '_2_2.asp':
+            summary = response(BASE + '_2_3.asp', urlencode({'mode': 'page-num', 'page': page}))
+            heading = '<tr>' + ''.join(f'<th>架空列{column}</th>' for column in range(9)) + '</tr>'
+            rows = ''.join('<tr>' + ''.join(f'<td>{row * 9 + column}</td>' for column in range(9)) + '</tr>' for row in range(6))
+            hidden = ''.join(f'<input type="hidden" name="ranking_key" value="FICTIONAL-{index}">' for index in range(20))
+            ranking = f'<form id="ranking-original-form" method="post"><table id="ranking-original-table">{heading}{rows}</table></form>'
+            # Legacy ranking rows carry repeated hidden keys inside source cells.
+            ranking = ranking.replace('<td>0</td>', '<td>0' + hidden + '</td>', 1)
+            return summary.replace('mode=page-num', 'mode=inline-ranking').replace('</body>', ranking + '</body>')
+    if mode == 'page-num':
+        if path == BASE + '_1.asp':
+            return f'''<!doctype html><html><head><title>架空集計一覧</title></head><frameset rows="115,*">
+            <frame name="summary-condition" src="{BASE}_1_1.asp?mode=page-num"><frame name="summary-report" src="{BASE}_2.asp?mode=page-num"></frameset></html>'''
+        if path == BASE + '_1_1.asp':
+            return shell('''<form><label>架空の日付<input type="text" name="ft_YYYYMMDD_F" maxlength="8" value="20261023"></label></form>
+            <div id="ui-datepicker-div"><table class="ui-datepicker-calendar"><tr><th>日</th><th>月</th><th>火</th></tr><tr><td>1</td><td>2</td><td>3</td></tr></table></div>''')
+        if path == BASE + '_2.asp':
+            request = json.dumps({'method': method, 'values': values or {}})
+            return f'''<!doctype html><html><head><title>架空集計一覧</title><script>window.fixtureSummaryPost={request};</script></head>
+            <frameset rows="80,*"><frame name="receipt-header" src="{BASE}_2_3.asp?mode=page-num&page={page}">
+            <frame name="receipt-data" src="{BASE}_2_2.asp?mode=page-num&page={page}"></frameset></html>'''
+        if path == BASE + '_2_3.asp':
+            options = ''.join(f'<option value="{value}"' + (' selected' if value == page else '') + f'>{value}</option>' for value in ['1', '2'])
+            action = BASE + '_2.asp?mode=page-num'
+            previous = ' disabled' if page == '1' else ''
+            following = ' disabled' if page == '2' else ''
+            return shell(f'''<table id="created-only-summary"><tr><td class="selecttitle">作成日付</td><td>2026/10/23 12:00:0{page} 現在</td></tr></table>
+            <table><tr><td><form name="form1" id="summary-show" method="post" action="{action}" target="summary-report">
+            <input type="hidden" name="token" value="FICTIONAL-SHOW"><select name="PageNum">{options}</select><input type="submit" name="submit3" value=" 表示 "></form></td>
+            <td><form name="form1" id="summary-previous" method="post" action="{action}" target="summary-report">
+            <input type="hidden" name="token" value="FICTIONAL-PREVIOUS"><input type="hidden" name="PageNum" value="1"><input type="submit" name="submit1" value="前ページ"{previous}></form></td>
+            <td><form name="form1" id="summary-next" method="post" action="{action}" target="summary-report">
+            <input type="hidden" name="token" value="FICTIONAL-NEXT"><input type="hidden" name="PageNum" value="2"><input type="submit" name="submit2" value="次ページ"{following}></form></td></tr></table>''', '''
+            window.fixtureSummaryOriginals=Array.from(document.forms).map(form=>({form,fields:Array.from(form.elements),target:form.target,action:form.action}));''')
     if path == BASE + '_2.asp':
         suffix = '?' + urlencode({'late': late, 'mode': mode})
         frames = [f'<frame name="receipt-header" src="{BASE}_2_3.asp{suffix}">', f'<frame name="receipt-data" src="{BASE}_2_2.asp{suffix}">']

@@ -74,8 +74,25 @@ enum LegacySiteSupport {
             const labels = Array.from(table.rows).flatMap(row => Array.from(row.cells).map(label));
             return labels.includes('品番') && labels.some(value => /^(作成日付|作成日時|更新日時|更新日付|更新日)$/.test(value));
           });
-          return metadata.length > 0 && !tables.some(table => !metadata.includes(table) && table.rows.length > 3 &&
-            !table.querySelector('input,select,button,textarea'));
+          // A detail table can end with an original Back button. Its presence must
+          // not turn every preceding product field into pager-only metadata.
+          const hasDetailRows = table => {
+            if (metadata.includes(table) || table.rows.length <= 3) return false;
+            let meaningful = 0;
+            for (const row of table.rows) {
+              const hasText = Array.from(row.cells).some(cell => {
+                const walker = doc.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+                let text;
+                while ((text = walker.nextNode())) {
+                  if (text.textContent.trim() && !text.parentElement?.closest('input,select,button,textarea,script,style')) return true;
+                }
+                return false;
+              });
+              if (hasText && ++meaningful > 3) return true;
+            }
+            return false;
+          };
+          return metadata.length > 0 && !tables.some(hasDetailRows);
         } catch (_) { return false; }
       };
       const root = document.documentElement;
@@ -484,7 +501,7 @@ enum LegacySiteSupport {
         if (legacyTable && legacyTable.querySelectorAll('form').length === 1) for(const control of legacyTable.querySelectorAll('input,select,textarea')) if(!control.form&&!owned.includes(control))owned.push(control);
         const controls = owned.filter(control => /^(INPUT|SELECT|TEXTAREA)$/.test(control.tagName) && control.type !== 'hidden' && !frozen(control));
         const passwordForm = controls.some(control => control.type === 'password');
-        const entryControls = controls.filter(control => /^(SELECT|TEXTAREA)$/.test(control.tagName) || (control.tagName === 'INPUT' && /^(text|search|date|password|email|number|tel|checkbox|radio)$/.test(control.type)));
+        const entryControls = controls.filter(control => !control.disabled && !control.readOnly && (/^(SELECT|TEXTAREA)$/.test(control.tagName) || (control.tagName === 'INPUT' && /^(text|search|date|password|email|number|tel|checkbox|radio)$/.test(control.type))));
         if (!passwordForm && (!searchPage || !entryControls.length)) continue;
         if (passwordForm) root.setAttribute('data-y3client-login', '');
         form.setAttribute('data-y3client-mobile-form', passwordForm ? 'login' : 'search');
@@ -773,7 +790,7 @@ enum LegacySiteSupport {
       const path=location.pathname;
       const readOnlyPage=/\/scripts\/verona\/(?:print|display|dwh)\/(?:prtz|dstz)/i.test(path);
       const searchForms=readOnlyPage?Array.from(document.forms).filter(form=>!form.querySelector('input[type=password]') && Array.from(form.elements).some(input=>/^(SELECT|TEXTAREA)$/.test(input.tagName) || (input.tagName==='INPUT' && ['text','search','date','checkbox','radio'].includes(input.type)))):[];
-      const conditionForms=searchForms.filter(form=>Array.from(form.elements).some(input=>input.tagName==='TEXTAREA'||(input.tagName==='SELECT'&&!/^(PgSelect|Page(?:No|Num)?|PageSelect)$/i.test(input.name||''))||(input.tagName==='INPUT'&&['text','search','date','checkbox','radio'].includes(input.type))));
+      const conditionForms=searchForms.filter(form=>Array.from(form.elements).some(input=>!input.disabled&&!input.readOnly&&(input.tagName==='TEXTAREA'||(input.tagName==='SELECT'&&!/^(PgSelect|Page(?:No|Num)?|PageSelect)$/i.test(input.name||''))||(input.tagName==='INPUT'&&['text','search','date','checkbox','radio'].includes(input.type)))));
       for(const form of searchForms)form.setAttribute('data-y3-form','');
       const mark=form=>{
         if(!form?.hasAttribute('data-y3-form'))return;
@@ -782,9 +799,12 @@ enum LegacySiteSupport {
         state.lastSubmissionAt=now;
         state.submissionRevision=Math.min((state.submissionRevision || 0)+1,1000000000);
       };
+      if(window.__y3ClientSubmissionDocumentRoot!==document.documentElement){
+        window.__y3ClientSubmissionDocumentRoot=document.documentElement;
+        document.addEventListener('submit',event=>mark(event.target),true);
+      }
       if(!window.__y3ClientSubmissionObserver){
         window.__y3ClientSubmissionObserver=true;
-        document.addEventListener('submit',event=>mark(event.target),true);
         const original=HTMLFormElement.prototype.submit;
         HTMLFormElement.prototype.submit=function(...args){mark(this);return original.apply(this,args);};
       }
@@ -1887,6 +1907,106 @@ enum LegacySiteSupport {
       }
       if(document.readyState!=='complete')window.addEventListener('load',()=>{reconcile();host.setTimeout(reconcile,0);},{once:true});
     })();
+    (() => {
+      'use strict';
+      if(location.origin!=='https://adidas-y3.poscmcloud.jp:15505'||!/^\/scripts\/verona\/(?:print|display|dwh)\/prtz450_3_2\.asp$/i.test(location.pathname)||document.body?.tagName!=='BODY')return;
+      if(window.__y3ClientAllLocations){window.__y3ClientAllLocations.reconcile();return;}
+      const generated='[data-y3client-all-locations-view]';
+      const clean=value=>String(value??'').replace(/\s+/g,' ').trim();
+      const key=value=>clean(value).normalize('NFKC').replace(/[\s:：]/g,'');
+      const node=(tag,attribute,text)=>{const result=document.createElement(tag);if(attribute)result.setAttribute(attribute,'');if(text!==undefined)result.textContent=text;return result;};
+      let state={table:null,source:null,hint:null,view:null,signature:'',unit:'JP',raw:false},running=false,pending=false;
+      const clear=()=>{state.view?.remove();state.source?.removeAttribute('data-y3client-all-locations-source');state.hint?.removeAttribute('data-y3client-all-locations-hint');state.hint=null;document.documentElement.removeAttribute('data-y3client-all-locations-cards');state.table=null;state.source=null;state.view=null;state.signature='';};
+      const read=()=>{
+        const matches=[];
+        for(const table of document.querySelectorAll('table')){
+          if(table.closest(generated)||table.querySelector('table')||table.rows.length<2)continue;
+          const headers=Array.from(table.rows[0].cells).map(cell=>key(cell.textContent));
+          if(headers.join('|')!=='品番|カラー|サイズ|商品コード|商品名|地区|店舗|TEL|上代|有効在庫数')continue;
+          if(table.querySelector('input,select,button,a,textarea'))continue;
+          const rows=[],totals=[];
+          let valid=true,totalStarted=false;
+          for(const row of Array.from(table.rows).slice(1)){
+            const cells=Array.from(row.cells);
+            if(cells.length===10&&cells.every(cell=>cell.colSpan===1&&cell.rowSpan===1)&&!totalStarted){rows.push(cells.map(cell=>clean(cell.textContent)));continue;}
+            if(cells.length===2&&cells[0].colSpan===9&&cells[1].colSpan===1&&cells.every(cell=>cell.rowSpan===1)&&/^(合計|総計|総合計)$/.test(key(cells[0].textContent))){totalStarted=true;totals.push(cells.map(cell=>clean(cell.textContent)));continue;}
+            valid=false;break;
+          }
+          if(valid&&rows.length)matches.push({table,headers,rows,totals});
+        }
+        return matches.length===1?matches[0]:null;
+      };
+      const style=()=>{
+        if(document.getElementById('y3client-all-locations-style'))return;
+        const element=node('style');element.id='y3client-all-locations-style';element.textContent=`
+          [data-y3client-all-locations-view] { max-width:100%; color:#17191d; font:14px/1.5 -apple-system,BlinkMacSystemFont,sans-serif; }
+          [data-y3client-all-locations-view] * { box-sizing:border-box; }
+          [data-y3client-all-locations-toolbar] { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; margin:10px 0; }
+          [data-y3client-all-locations-toolbar] p { margin:0; color:#68727d; font-size:12px; }
+          [data-y3client-all-locations-view] button { min-height:44px; padding:8px 12px; border:1px solid #dce1e5; border-radius:9px; background:#fff; color:#17191d; font:600 12px -apple-system,BlinkMacSystemFont,sans-serif; }
+          [data-y3client-all-locations-units] { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:4px; margin:12px 0; padding:4px; border-radius:11px; background:#e9ecef; }
+          [data-y3client-all-locations-units] button { min-width:0; padding:8px 2px; border:0; background:transparent; }
+          [data-y3client-all-locations-units] button[aria-pressed='true'] { background:#17191d; color:#fff; }
+          [data-y3client-all-locations-card] { margin:12px 0; padding:16px; border:1px solid #e0e4e8; border-radius:13px; background:#fff; }
+          [data-y3client-all-locations-card] h2 { margin:0 0 6px; font-size:17px; overflow-wrap:anywhere; }
+          [data-y3client-all-locations-card] p { margin:3px 0; color:#69737d; font-size:12px; overflow-wrap:anywhere; }
+          [data-y3client-all-locations-grid] { width:100%; table-layout:fixed; border-collapse:collapse; margin:10px 0 0; }
+          [data-y3client-all-locations-grid] th,[data-y3client-all-locations-grid] td { padding:10px 4px; border:0; border-bottom:1px solid #edf0f2; background:transparent; white-space:normal; overflow-wrap:anywhere; text-align:right; }
+          [data-y3client-all-locations-grid] th:first-child,[data-y3client-all-locations-grid] td:first-child { width:65%; text-align:left; }
+          [data-y3client-all-locations-grid] th { color:#727b85; font-size:11px; font-weight:500; }
+          [data-y3client-all-locations-grid] td:last-child { font-size:18px; font-weight:650; font-variant-numeric:tabular-nums; }
+          [data-y3client-all-locations-grid] small { display:block; color:#858d96; font-size:10px; }
+          [data-y3client-all-locations-card] details { margin:8px 0 0; }
+          [data-y3client-all-locations-card] summary { min-height:44px; padding:12px 0; color:#63707b; font-size:12px; }
+          [data-y3client-all-locations-fields] { margin:0; }
+          [data-y3client-all-locations-fields] div { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,2fr); gap:8px; padding:5px 0; }
+          [data-y3client-all-locations-fields] dt { color:#7b838c; font-size:11px; }
+          [data-y3client-all-locations-fields] dd { margin:0; font-size:12px; overflow-wrap:anywhere; }
+          [data-y3client-all-locations-total] { display:flex; justify-content:space-between; gap:8px; margin:12px 0; padding:15px; border:1px solid #dce1e5; border-radius:11px; background:#fff; font-weight:650; }
+          html[data-y3client-all-locations-cards] [data-y3client-all-locations-source] { display:none!important; }
+          html[data-y3client-all-locations-cards] [data-y3client-all-locations-hint] { display:none!important; }
+        `;(document.head||document.documentElement).appendChild(element);
+      };
+      function render(data){
+        const focused=document.activeElement?.closest(generated)?document.activeElement.getAttribute('data-y3client-all-locations-unit'):null;
+        const api=window.__y3InventoryPresentation;
+        const groups=new Map();
+        for(const values of data.rows){const groupKey=JSON.stringify([values[0],values[1],values[4],values[5],values[6],values[7],values[8]]);if(!groups.has(groupKey))groups.set(groupKey,{values,rows:[]});groups.get(groupKey).rows.push(values);}
+        const view=node('section','data-y3client-all-locations-view');view.setAttribute('data-y3client-inventory-view','');
+        const toolbar=node('div','data-y3client-all-locations-toolbar');toolbar.appendChild(node('p',null,groups.size+'拠点・カラー / '+data.rows.length+'件'));
+        const toggle=node('button','data-y3client-all-locations-table-toggle',state.raw?'サイズ別に表示':'原表で表示');toggle.type='button';toggle.addEventListener('click',()=>{state.raw=!state.raw;render(data);});toolbar.appendChild(toggle);view.appendChild(toolbar);
+        const category=api.resolveCategory({}, {sizeCodes:data.rows.map(row=>row[2]),product:{productName:data.rows[0][4]}});
+        if(category==='footwear'&&!state.raw){const units=node('div','data-y3client-all-locations-units');units.setAttribute('aria-label','靴サイズの単位');for(const [unit,label] of [['JP','JP'],['US','US M'],['USW','US W'],['UK','UK'],['EU','EU'],['CH','CH']]){const button=node('button',null,label);button.type='button';button.setAttribute('data-y3client-all-locations-unit',unit);button.setAttribute('aria-pressed',String(state.unit===unit));button.addEventListener('click',()=>{state.unit=unit;render(data);});units.appendChild(button);}view.appendChild(units);}
+        if(!state.raw){
+          for(const group of groups.values()){
+            const card=node('article','data-y3client-all-locations-card');card.appendChild(node('h2',null,group.values[6]||'拠点名未設定'));
+            card.appendChild(node('p',null,[group.values[5],group.values[0],group.values[4],'カラー '+group.values[1]].filter(Boolean).join(' / ')));
+            const grid=node('table','data-y3client-all-locations-grid');const head=node('tr');head.append(node('th',null,'サイズ'),node('th',null,'有効在庫'));const thead=node('thead');thead.appendChild(head);grid.appendChild(thead);const body=node('tbody');
+            for(const values of group.rows){const row=node('tr','data-y3client-all-locations-row');row.setAttribute('data-y3client-size-code',values[2]);row.setAttribute('data-y3client-stock-source-row',String(data.rows.indexOf(values)));const size=node('td');const formatted=api.formatSize(values[2],category,state.unit);size.appendChild(node('span',null,(formatted.unit?({'US':'US M','USW':'US W'}[formatted.unit]||formatted.unit)+' ':'')+formatted.text));size.appendChild(node('small',null,'コード '+values[2]));row.append(size,node('td','data-y3client-all-locations-quantity',values[9]||'—'));body.appendChild(row);}grid.appendChild(body);card.appendChild(grid);
+            const details=node('details');details.appendChild(node('summary',null,'商品情報・連絡先を見る'));const fields=node('dl','data-y3client-all-locations-fields');
+            for(const values of group.rows){for(let index=0;index<data.headers.length;index++){const line=node('div');line.append(node('dt',null,data.headers[index]),node('dd',null,values[index]));fields.appendChild(line);}}details.appendChild(fields);card.appendChild(details);view.appendChild(card);
+          }
+          for(const values of data.totals){const total=node('div','data-y3client-all-locations-total');total.append(node('span',null,values[0]),node('span','data-y3client-all-locations-total-quantity',values[1]||'—'));view.appendChild(total);}
+        }
+        state.view?.replaceWith(view);if(!view.isConnected)state.source.parentElement.insertBefore(view,state.source);state.view=view;
+        document.documentElement.toggleAttribute('data-y3client-all-locations-cards',!state.raw);
+        if(focused)view.querySelector('[data-y3client-all-locations-unit="'+focused+'"]')?.focus({preventScroll:true});
+      }
+      function reconcile(){
+        if(running)return !!state.view;running=true;
+        try{
+          const data=read();if(!data||!window.__y3InventoryPresentation){clear();return false;}
+          const signature=JSON.stringify([data.headers,data.rows,data.totals]);
+          if(state.table===data.table&&state.signature===signature&&state.view?.isConnected)return true;
+          if(state.table!==data.table){clear();state.raw=false;}
+          state.table=data.table;state.signature=signature;state.source=data.table.closest('[data-y3client-table-scroll]')||data.table;
+          state.source.setAttribute('data-y3client-all-locations-source','');if(state.source.previousElementSibling?.hasAttribute('data-y3client-result-hint')){state.hint=state.source.previousElementSibling;state.hint.setAttribute('data-y3client-all-locations-hint','');}style();render(data);return true;
+        }catch(_){clear();return false;}finally{running=false;}
+      }
+      window.__y3ClientAllLocations={reconcile};reconcile();
+      const observer=new MutationObserver(changes=>{if(pending||!changes.some(change=>!(change.target.nodeType===1?change.target:change.target.parentElement)?.closest(generated)))return;pending=true;setTimeout(()=>{pending=false;reconcile();},0);});observer.observe(document.body,{childList:true,subtree:true,characterData:true});
+      if(document.readyState!=='complete')addEventListener('load',()=>{reconcile();setTimeout(reconcile,0);},{once:true});
+    })();
     """#
 
     // Reports only integer frame paths and a structural role, never contents, URLs, or form data.
@@ -1925,7 +2045,6 @@ enum LegacySiteSupport {
         }
         if (!path.length) return;
         try {
-          if (/dummy|blank|empty/i.test(win.name)) return;
           const body = win.document.body;
           if (!body || (!body.textContent.trim() && !body.querySelector('form,table,a,input,select,textarea,img'))) return;
           if (win.document.documentElement.hasAttribute('data-y3client-inventory-primary')) {
@@ -1943,13 +2062,41 @@ enum LegacySiteSupport {
           if (win.__y3ClientIsInventoryMetadata?.()) {
             panes.push({path,kind:'controls',title:'ページ操作'}); return;
           }
-          const tableRows = body.querySelectorAll('table tr').length;
-          const tableCells = body.querySelectorAll('table td,table th').length;
+          if (window.__y3ClientReportMerge?.classify?.(win) === 'metadata') {
+            panes.push({path,kind:'controls',title:'検索内容とページ操作'}); return;
+          }
           const controls = body.querySelector('input:not([type="hidden" i]),select,textarea,button');
-          const searchFields = body.querySelector('input[name*="YYYYMMDD" i]:not([type="hidden" i]),input[type="text" i],input[type="date" i],input[type="search" i],textarea');
-          const reportLeaf = /\/prtz\d+_(?:[2-9]|[2-9]_[2-9])\.asp$/i.test(win.location.pathname);
-          const kind = (searchFields || (condition && controls && body.querySelector('form'))) ? 'condition' :
-            (reportLeaf || tableRows >= 5 || tableCells >= 20) ? 'result' : controls ? 'controls' : 'navigation';
+          const pagerName = /^(?:PgSelect|PgMax|Page(?:No|Num|Select)?|submit[123])$/i;
+          const entryFields = Array.from(body.querySelectorAll('input:not([type="hidden" i]),select,textarea')).filter(field =>
+            !field.disabled && !field.readOnly && !pagerName.test(field.name || ''));
+          const searchFields = entryFields.some(field => field.tagName === 'TEXTAREA' ||
+            (field.tagName === 'INPUT' && /^(text|date|search|password)$/.test(field.type)));
+          const conditionLeaf = condition || /\/(?:prtz|dstz)\d+_1(?:_\d+)?\.asp$/i.test(win.location.pathname);
+          const generated = '[data-y3client-inventory],[data-y3client-inventory-view],[data-y3client-report-combined],[data-y3client-all-locations-view]';
+          const tables = Array.from(body.querySelectorAll('table')).filter(table => !table.querySelector('table') &&
+            !table.closest(generated + ',[data-y3client-menu-table],[data-y3client-search-table],[data-y3client-form-table],[data-y3client-report-summary],[data-y3client-pager-table],#ui-datepicker-div,.ui-datepicker'));
+          const hasData = tables.some(table => {
+            const rows = Array.from(table.rows);
+            const cells = rows.flatMap(row => Array.from(row.cells));
+            if (!cells.length) return false;
+            if (table.hasAttribute('data-y3client-result-list') || table.hasAttribute('data-y3client-action-table')) return rows.length >= 2;
+            const fields = Array.from(table.querySelectorAll('input,select,button,textarea'));
+            if (fields.length && fields.every(field => pagerName.test(field.name || '') || /^(button|submit|hidden)$/.test(field.type || ''))) {
+              if (rows.length <= 1) return false;
+            }
+            if (rows.length >= 2 && rows.some(row => row.cells.length >= 2)) return true;
+            return cells.length >= 2 && (table.querySelector('input[readonly],textarea[readonly]') || /売上|在庫|合計|実績|金額|客数/.test(table.textContent));
+          });
+          // Report-shaped URLs also serve navigation and pager-only documents.
+          // Script/style text and a URL suffix alone are never evidence of data.
+          const textWalker = win.document.createTreeWalker(body, 4);
+          let visibleText = '', textNode;
+          while ((textNode = textWalker.nextNode()) && visibleText.length < 4000) {
+            if (!textNode.parentElement?.closest('script,style,noscript,' + generated)) visibleText += ' ' + textNode.textContent;
+          }
+          const explicitMessage = /該当(?:する)?データ|対象(?:となる|の)?データ|データがありません|日付が不正|入力.*(?:不正|誤り)|エラー|不正操作|マスター?.*設定.*(?:ください|下さい)/.test(visibleText);
+          const kind = (searchFields || (conditionLeaf && entryFields.length && body.querySelector('form'))) ? 'condition' :
+            (hasData || explicitMessage) ? 'result' : controls ? 'controls' : 'navigation';
           const titles = { 'prtz011_3.asp':'在庫一覧', 'prtz030_2_2.asp':'集計結果', 'prtz030_2_3.asp':'内訳1', 'prtz030_2_4.asp':'内訳2' };
           const title = titles[win.location.pathname.split('/').pop().toLowerCase()];
           panes.push(title ? { path, kind, title } : { path, kind });
@@ -1995,6 +2142,9 @@ enum LegacySiteSupport {
         if (trusted(win)) focusedWindow = win;
       }
       const state = window.__y3ClientFrameLayout || { originals: [] };
+      state.observer?.disconnect();
+      state.observer = null;
+      const revision = state.revision = (state.revision || 0) + 1;
       for (const saved of state.originals) {
         if (!saved.element.isConnected) continue;
         for (const name of ['rows', 'cols']) {
@@ -2004,18 +2154,54 @@ enum LegacySiteSupport {
       }
       state.originals = [];
       const seen = new Set();
+      const focusedLayouts = [];
       for (const change of changes) {
         const element = change.element;
         if (seen.has(element)) continue;
         seen.add(element);
         state.originals.push({ element, rows: element.getAttribute('rows'), cols: element.getAttribute('cols') });
-        for (const name of ['rows', 'cols']) {
-          if (!element.hasAttribute(name)) continue;
-          element.setAttribute(name, Array.from({ length: change.count }, (_, index) => index === change.selected ? '*' : '0').join(','));
-        }
+        // A FRAMESET can have both attributes: rows="115,*" cols="*" is a
+        // two-row, one-column layout. Expanding both axes to the child count
+        // puts the second frame in a zero-height grid cell. Preserve each
+        // axis's dimensions and focus the selected child's actual grid cell.
+        const dimensions = name => Math.max(1, (element.getAttribute(name) || '*').split(',').length);
+        const columns = dimensions('cols');
+        const rows = Math.max(dimensions('rows'), Math.ceil(change.count / columns));
+        const selectedRow = Math.floor(change.selected / columns);
+        const selectedColumn = change.selected % columns;
+        const sizes = (count, selected) => Array.from({ length: count }, (_, index) => index === selected ? '*' : '0').join(',');
+        focusedLayouts.push({ element, rows: sizes(rows, selectedRow), cols: sizes(columns, selectedColumn) });
       }
       window.__y3ClientFrameLayout = state;
+      const enforce = () => {
+        for (const layout of focusedLayouts) {
+          if (!layout.element.isConnected) continue;
+          for (const name of ['rows', 'cols']) {
+            if (layout.element.getAttribute(name) !== layout[name]) layout.element.setAttribute(name, layout[name]);
+          }
+        }
+      };
+      enforce();
+      if (focusedLayouts.length) {
+        // Some condition pages reset their parent's rows every 200 ms for the
+        // datepicker. Keep native pane focus through those writes. Disconnect
+        // around our own changes, and release the guard for "show all" above.
+        const observer = new MutationObserver(() => {
+          if (window.__y3ClientFrameLayout !== state || state.revision !== revision) return;
+          observer.disconnect();
+          enforce();
+          watch();
+        });
+        const watch = () => {
+          for (const layout of focusedLayouts) if (layout.element.isConnected) {
+            observer.observe(layout.element, { attributes: true, attributeFilter: ['rows', 'cols'] });
+          }
+        };
+        state.observer = observer;
+        watch();
+      }
       if (focusedWindow) requestAnimationFrame(() => {
+        if (window.__y3ClientFrameLayout !== state || state.revision !== revision) return;
         if (trusted(focusedWindow)) { try { focusedWindow.dispatchEvent(new Event('resize')); } catch (_) {} }
       });
       return true;

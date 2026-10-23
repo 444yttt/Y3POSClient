@@ -57,6 +57,8 @@ private final class FixtureSession {
             });
             """, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         // The production configure() sequence: install BEFORE the first request, in page world.
+        controller.addUserScript(WKUserScript(source: localScript(PageSupportPresentation.bootstrap),
+            injectionTime: .atDocumentStart, forMainFrameOnly: false))
         for source in [LegacySiteSupport.viewportAndTouch,
                        LegacySiteSupport.mobileRedesign,
                        LegacySiteSupport.inventoryPresentation,
@@ -97,6 +99,86 @@ private final class FixtureSession {
 }
 
 final class WebKitRuntimeTests: XCTestCase {
+    @MainActor
+    func testCreatedOnlyHeaderDelegatesThreePageNumFormsAndKeepsRealAggregates() async throws {
+        let session = FixtureSession(path: "/scripts/verona/print/prtz096_1.asp?mode=page-num")
+        defer { session.close() }
+        try await session.waitForLoad()
+        try await eventually(session.view, """
+            (()=>{window.__y3ClientReportMerge?.reconcile();return !!frames['summary-report']?.frames['receipt-data']?.document.querySelector('[data-y3client-report-combined]');})()
+            """)
+        let resultPanes = try await panes(session.view).filter { $0["kind"] as? String == "result" }
+        XCTAssertEqual(resultPanes.count, 1)
+        let originals = try await session.view.evaluateJavaScript("""
+            (()=>{const header=frames['summary-report'].frames['receipt-header'];return {
+              metadata:__y3ClientReportMerge.classify(header)==='metadata',
+              same:header.fixtureSummaryOriginals.every(o=>o.form.isConnected&&o.form.target===o.target&&o.form.action===o.action&&o.fields.every(f=>f.form===o.form))};})()
+            """) as? [String: Bool] ?? [:]
+        XCTAssertEqual(originals["metadata"], true)
+        XCTAssertEqual(originals["same"], true)
+        for (title, token, pageNumber, submitName, submitValue) in [
+            ("検索結果 表示", "FICTIONAL-SHOW", "2", "submit3", " 表示 "),
+            ("検索結果 前へ", "FICTIONAL-PREVIOUS", "1", "submit1", "前ページ"),
+            ("検索結果 次へ", "FICTIONAL-NEXT", "2", "submit2", "次ページ")
+        ] {
+            _ = try await session.view.evaluateJavaScript("""
+                (()=>{const doc=frames['summary-report'].frames['receipt-data'].document;
+                  doc.querySelector('[data-y3client-report-pages] select').value='2';
+                  Array.from(doc.querySelectorAll('[data-y3client-report-pages] button')).find(button=>button.getAttribute('aria-label')==='\(title)').click();})()
+                """)
+            try await eventually(session.view, """
+                (()=>{__y3ClientReportMerge.reconcile();return frames['summary-report'].fixtureSummaryPost?.values?.token?.[0]==='\(token)'&&!!frames['summary-report'].frames['receipt-data'].document.querySelector('[data-y3client-report-combined]');})()
+                """)
+            let request = try await session.view.evaluateJavaScript("frames['summary-report'].fixtureSummaryPost") as? [String: Any] ?? [:]
+            XCTAssertEqual(request["method"] as? String, "POST")
+            let values = request["values"] as? [String: [String]] ?? [:]
+            XCTAssertEqual(values["token"], [token])
+            XCTAssertEqual(values["PageNum"], [pageNumber])
+            XCTAssertEqual(values[submitName], [submitValue])
+        }
+        let aggregateKept = try await session.view.evaluateJavaScript("""
+            (()=>{const header=frames['summary-report'].frames['receipt-header'],table=header.document.createElement('table');
+              table.innerHTML='<tr><th>店舗</th><th>金額</th></tr><tr><td>架空A</td><td>12</td></tr>';
+              header.document.body.appendChild(table);const role=__y3ClientReportMerge.classify(header);
+              __y3ClientReportMerge.reconcile();return role===null&&table.isConnected&&!frames['summary-report'].frames['receipt-data'].document.querySelector('[data-y3client-report-combined]');})()
+            """) as? Bool
+        XCTAssertEqual(aggregateKept, true)
+        XCTAssertEqual(session.observer.failures, [])
+        XCTAssertEqual(session.observer.scriptErrors, [])
+
+        let ranking = FixtureSession(path: "/scripts/verona/print/prtz096_1.asp?mode=inline-ranking")
+        defer { ranking.close() }
+        try await ranking.waitForLoad()
+        try await eventually(ranking.view, """
+            (()=>{const frame=frames['summary-report']?.frames['ranking-data'];return !!frame?.document.getElementById('ranking-original-table')&&!!__y3ClientReportMerge;})()
+            """)
+        let rankingResults = try await panes(ranking.view).filter { $0["kind"] as? String == "result" }
+        XCTAssertEqual(rankingResults.count, 1, "A ranking with hidden row keys remains a result")
+        let rankingPreserved = try await ranking.view.evaluateJavaScript("""
+            (()=>{const frame=frames['summary-report'].frames['ranking-data'],doc=frame.document,
+              table=doc.getElementById('ranking-original-table'),form=doc.getElementById('ranking-original-form');
+              return __y3ClientReportMerge.classify(frame)===null&&table.rows.length===7&&
+                Array.from(table.rows).every(row=>row.cells.length===9)&&table.querySelectorAll('input[type="hidden"]').length===20&&
+                Array.from(table.querySelectorAll('input')).every(input=>input.form===form)&&
+                frame.fixtureSummaryOriginals.every(o=>o.form.isConnected&&o.form.target===o.target&&o.form.action===o.action&&o.fields.every(f=>f.form===o.form));})()
+            """) as? Bool
+        XCTAssertEqual(rankingPreserved, true)
+        _ = try await ranking.view.evaluateJavaScript("""
+            (()=>{const doc=frames['summary-report'].frames['ranking-data'].document;
+              doc.querySelector('select[name="PageNum"]').value='2';doc.querySelector('input[name="submit3"]').click();})()
+            """)
+        try await eventually(ranking.view, """
+            (()=>{const result=frames['summary-report'];return result?.fixtureSummaryPost?.values?.token?.[0]==='FICTIONAL-SHOW'&&!!result?.frames['ranking-data']?.document.getElementById('ranking-original-table');})()
+            """)
+        let rankingRequest = try await ranking.view.evaluateJavaScript("frames['summary-report'].fixtureSummaryPost") as? [String: Any] ?? [:]
+        XCTAssertEqual(rankingRequest["method"] as? String, "POST")
+        let rankingValues = rankingRequest["values"] as? [String: [String]] ?? [:]
+        XCTAssertEqual(rankingValues["PageNum"], ["2"])
+        XCTAssertEqual(rankingValues["submit3"], [" 表示 "])
+        XCTAssertEqual(ranking.observer.failures, [])
+        XCTAssertEqual(ranking.observer.scriptErrors, [])
+    }
+
     func testConsumedResultFocusMovesToUniqueCombinedResult() {
         let oldHeader = FramePane(path: [0], title: "結果1", kind: .result)
         let controls = FramePane(path: [0], title: "検索内容とページ操作", kind: .controls)

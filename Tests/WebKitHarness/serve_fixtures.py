@@ -8,6 +8,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from receipt_fixtures import response as receipt_response
+from browser_fixtures import response as browser_response
+from all_locations_fixtures import response as all_locations_response
+from pane_roles_fixtures import response as pane_roles_response
 
 
 BASE = "/scripts/verona/print/"
@@ -191,8 +194,17 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         report = re.fullmatch(r"/scripts/verona/(print|display|dwh)/(prtz(?:010|011|015))_([0-9_]+)\.asp", parsed.path)
         scenario = parse_qs(parsed.query).get("scenario", [""])[0]
+        browser = browser_response(parsed.path, parsed.query, self.command, getattr(self, "fixture_post_values", None))
+        pane_roles = pane_roles_response(parsed.path, parsed.query, self.command, getattr(self, "fixture_post_values", None))
+        all_locations = all_locations_response(parsed.path, parsed.query, self.command, getattr(self, "fixture_post_values", None))
         receipt = receipt_response(parsed.path, parsed.query, self.command, getattr(self, "fixture_post_values", None))
-        if receipt is not None:
+        if pane_roles is not None:
+            body = pane_roles
+        elif browser is not None:
+            body = browser
+        elif all_locations is not None:
+            body = all_locations
+        elif receipt is not None:
             body = receipt
         elif parsed.path == "/health":
             body = "ready"
