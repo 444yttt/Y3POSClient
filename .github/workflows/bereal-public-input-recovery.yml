@@ -6,6 +6,7 @@ on:
       - '.github/workflows/bereal-public-input-recovery.yml'
       - 'recovery/probe_public_input.py'
       - 'recovery/signing-primary-public.pem'
+      - 'scripts/inspect_bonus_metadata.py'
 permissions:
   contents: read
 concurrency:
@@ -21,7 +22,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Verify source syntax
-        run: python3 -m py_compile recovery/probe_public_input.py
+        run: python3 -m py_compile recovery/probe_public_input.py scripts/inspect_bonus_metadata.py
       - name: Recover and verify only the exact authorized original
         run: python3 recovery/probe_public_input.py
       - name: Save only safe recovery metadata
@@ -29,7 +30,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: BeReal493-original-recovery-proof-${{ github.sha }}
-          path: bereal-recovery-public/recovery.json
+          path: |
+            bereal-recovery-public/recovery.json
+            bereal-recovery-public/bonus-metadata.json
           retention-days: 90
           if-no-files-found: warn
       - name: Preserve only the authenticated encrypted original

@@ -19,6 +19,7 @@ import secrets
 import shutil
 import ssl
 import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.parse
@@ -30,7 +31,7 @@ EXPECTED_BYTES = 142120475
 EXPECTED_SHA = "e7d77665740c61f2b0d6eae21cb6052acd2add364db3f6b5fc9ef9198ac31cbc"
 INPUT_SOURCE = "1f749cd1b2433d2a32694d5c91849d22f84f429f"
 CERTIFICATE_SHA = "ffa75cd0e6ab13c541756f2eeb7768a685cae584bc50e653e63396b3c9a7e4d4"
-SHARE_ID = "032HQUIkpBvD_lsjh_BpoWMOA"
+SHARE_ID = "090Omw-eH81Fu0fY7SqKoEZDQ"
 RESOLVE = "https://ckdatabasews.icloud.com/database/1/com.apple.cloudkit/production/public/records/resolve"
 PUBLIC = Path("bereal-recovery-public")
 ENCRYPTED = Path("bereal-recovery-encrypted")
@@ -195,6 +196,34 @@ def encrypt_exact_original(original, report):
     report["encryption_private_key_used_or_exported"] = False
 
 
+
+def inspect_bonus_candidates(original, report):
+    """Optional, bounded declaration-only parser; failure cannot hide recovery."""
+    PUBLIC.mkdir(exist_ok=True)
+    target = PUBLIC / "bonus-metadata.json"
+    try:
+        result = subprocess.run(
+            [sys.executable, "scripts/inspect_bonus_metadata.py", str(original),
+             "--output", str(target)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=180,
+        )
+        if result.returncode != 0 or not target.is_file() or target.stat().st_size > 512 * 1024:
+            raise RecoveryError("bonus_metadata_parser_unavailable")
+        parsed = json.loads(target.read_text())
+        if parsed.get("input_sha256") != EXPECTED_SHA:
+            raise RecoveryError("bonus_metadata_input_mismatch")
+        metadata = parsed["metadata"]
+        report["bonus_metadata_status"] = "declaration_candidates_only"
+        report["bonus_metadata_source_commit"] = "a5b4aa3c9b46adb233b3d6abfea545699f5c1366"
+        report["bonus_metadata_sha256"] = digest_file(target)
+        report["bonus_model_count"] = len(metadata["models"])
+        report["bonus_string_count"] = len(metadata["string_candidates"])
+        report["bonus_symbol_count"] = len(metadata["symbol_candidates"])
+    except Exception:
+        target.unlink(missing_ok=True)
+        report["bonus_metadata_status"] = "unavailable; input recovery status unaffected"
+
+
 def main():
     os.umask(0o077)
     report = {
@@ -220,6 +249,7 @@ def main():
             except Exception:
                 shutil.rmtree(ENCRYPTED, ignore_errors=True)
                 report["encryption_status"] = "unavailable; exact-source probe still succeeded"
+            inspect_bonus_candidates(original, report)
     except RecoveryError as exc:
         report["status"] = "recovery_unavailable"
         report["failure_kind"] = exc.code
