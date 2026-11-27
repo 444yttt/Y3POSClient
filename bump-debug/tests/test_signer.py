@@ -8,7 +8,9 @@ from pathlib import Path
 import plistlib
 import struct
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -205,6 +207,69 @@ class ProfileTests(unittest.TestCase):
         for method in ("POST", "PATCH", "DELETE", "PUT"):
             with self.subTest(method=method), self.assertRaisesRegex(SIGNER.BumpError, "write_forbidden"):
                 SIGNER.ReadOnlyAPI(API()).request(method, "/v1/profiles")
+
+
+class IdentitySelectionTests(unittest.TestCase):
+    def module(self):
+        primary = (Path("primary.p12"), b"primary-cert", Path("primary-key.pem"), Path("api-key.p8"))
+        alternate = (Path("alternate.p12"), b"alternate-cert", None, Path("api-key.p8"))
+        module = SimpleNamespace()
+        module.decode_identity = mock.Mock(side_effect=lambda root, need_private_key, **kwargs:
+            alternate if kwargs.get("certificate_env") == "DIST_P12_BASE64" else primary)
+        module.RefreshingAppleAPI = mock.Mock(return_value=object())
+        module.signing_readiness = mock.Mock(return_value=({}, {"attributes": {"udid": "fixture-device"}}))
+        module.select_existing_wildcard_profile = mock.Mock(return_value=(b"fixture-profile", {}))
+        return module
+
+    def test_primary_identity_used_when_both_alternate_variables_absent(self):
+        module = self.module()
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"APPLE_TEAM_ID": "TESTTEAM00"}, clear=True):
+            result = SIGNER.prepare_identity(module, Path(directory), True)
+        self.assertEqual(result[0], Path("primary.p12"))
+        self.assertEqual(result[1], b"primary-cert")
+        self.assertEqual(result[2], Path("primary-key.pem"))
+        self.assertEqual(result[3], b"primary-cert")
+        self.assertEqual(result[-2:], ("P12_PASSWORD", "existing_primary"))
+        module.decode_identity.assert_called_once()
+        module.signing_readiness.assert_called_once()
+        self.assertEqual(module.select_existing_wildcard_profile.call_args.args[1], b"primary-cert")
+
+    def test_alternate_identity_retains_primary_input_decryption_key(self):
+        module = self.module()
+        environment = {"APPLE_TEAM_ID": "TESTTEAM00", "DIST_P12_BASE64": "fixture", "DIST_P12_PASSWORD": "fixture"}
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, environment, clear=True):
+            result = SIGNER.prepare_identity(module, Path(directory), True)
+        self.assertEqual(result[0], Path("alternate.p12"))
+        self.assertEqual(result[1], b"primary-cert")
+        self.assertEqual(result[2], Path("primary-key.pem"))
+        self.assertEqual(result[3], b"alternate-cert")
+        self.assertEqual(result[-2:], ("DIST_P12_PASSWORD", "existing_alternate"))
+        self.assertEqual(module.decode_identity.call_count, 2)
+        self.assertEqual(module.signing_readiness.call_count, 2)
+        self.assertEqual(module.select_existing_wildcard_profile.call_args.args[1], b"alternate-cert")
+
+    def test_partial_alternate_variables_rejected_before_decode(self):
+        for name in ("DIST_P12_BASE64", "DIST_P12_PASSWORD"):
+            module = self.module()
+            with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"APPLE_TEAM_ID": "TESTTEAM00", name: "fixture"}, clear=True):
+                with self.subTest(name=name), self.assertRaisesRegex(SIGNER.BumpError, "incomplete_alternate"):
+                    SIGNER.prepare_identity(module, Path(directory), False)
+            module.decode_identity.assert_not_called()
+
+    def test_alternate_device_must_match_and_profile_failure_remains_exact(self):
+        module = self.module()
+        module.signing_readiness.side_effect = [({}, {"attributes": {"udid": "first"}}), ({}, {"attributes": {"udid": "second"}})]
+        environment = {"APPLE_TEAM_ID": "TESTTEAM00", "DIST_P12_BASE64": "fixture", "DIST_P12_PASSWORD": "fixture"}
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(SIGNER.BumpError, "registered_device_changed"):
+                SIGNER.prepare_identity(module, Path(directory), False)
+        module.select_existing_wildcard_profile.assert_not_called()
+        module = self.module()
+        module.select_existing_wildcard_profile.side_effect = RuntimeError("No existing wildcard Ad Hoc profile proves certificate compatibility")
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"APPLE_TEAM_ID": "TESTTEAM00"}, clear=True):
+            with self.assertRaises(RuntimeError) as error:
+                SIGNER.prepare_identity(module, Path(directory), False)
+        self.assertEqual(SIGNER.safe_failure(error.exception), "no_compatible_existing_wildcard_profile")
 
 
 if __name__ == "__main__":

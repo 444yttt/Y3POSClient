@@ -266,18 +266,25 @@ class ReadOnlyAPI:
 
 
 def prepare_identity(module, root, need_private_key):
+    alternate_certificate = bool(os.environ.get("DIST_P12_BASE64"))
+    alternate_password = bool(os.environ.get("DIST_P12_PASSWORD"))
+    if alternate_certificate != alternate_password:
+        raise BumpError("incomplete_alternate_signing_assets")
     p12, primary_der, key, asc = module.decode_identity(root, need_private_key=need_private_key)
     api = ReadOnlyAPI(module.RefreshingAppleAPI(asc))
     _, device = module.signing_readiness(api, primary_der)
-    alternate = root / "alternate"
-    alternate.mkdir(mode=0o700)
-    p12, der, _, _ = module.decode_identity(alternate, need_private_key=False,
-        certificate_env="DIST_P12_BASE64", password_env="DIST_P12_PASSWORD")
-    _, alternate_device = module.signing_readiness(api, der)
-    if alternate_device["attributes"]["udid"] != device["attributes"]["udid"]:
-        raise BumpError("registered_device_changed")
+    der, password_env, identity_role = primary_der, "P12_PASSWORD", "existing_primary"
+    if alternate_certificate:
+        alternate = root / "alternate"
+        alternate.mkdir(mode=0o700)
+        p12, der, _, _ = module.decode_identity(alternate, need_private_key=False,
+            certificate_env="DIST_P12_BASE64", password_env="DIST_P12_PASSWORD")
+        _, alternate_device = module.signing_readiness(api, der)
+        if alternate_device["attributes"]["udid"] != device["attributes"]["udid"]:
+            raise BumpError("registered_device_changed")
+        password_env, identity_role = "DIST_P12_PASSWORD", "existing_alternate"
     raw, profile = module.select_existing_wildcard_profile(api, der, os.environ["APPLE_TEAM_ID"], device)
-    return p12, primary_der, key, der, raw, profile
+    return p12, primary_der, key, der, raw, profile, password_env, identity_role
 
 
 def build_package(module, root, original):
@@ -298,7 +305,7 @@ def build_package(module, root, original):
     return payload, receipt
 
 
-def sign_package(module, root, payload, p12, der, raw, profile, original_keys, package_receipt):
+def sign_package(module, root, payload, p12, der, raw, profile, original_keys, package_receipt, password_env, identity_role):
     app = payload / "Payload/Location.app"
     bundles = validate_bundles(app)
     mappings = {info["CFBundleIdentifier"]: identifier for _, info, identifier in bundles}
@@ -318,7 +325,7 @@ def sign_package(module, root, payload, p12, der, raw, profile, original_keys, p
         targets.append((bundle, info, identifier, entitlement_path))
     fingerprint = hashlib.sha1(der).hexdigest().upper()
     keychain = root / "signing.keychain-db"
-    with module.signing_keychain_scope(keychain, secrets.token_urlsafe(32), p12, os.environ["DIST_P12_PASSWORD"], fingerprint):
+    with module.signing_keychain_scope(keychain, secrets.token_urlsafe(32), p12, os.environ[password_env], fingerprint):
         def sign(path, entitlements=None, stage="sign_macho"):
             args = ["/usr/bin/codesign", "--force", "--sign", fingerprint, "--keychain", str(keychain), "--timestamp=none", "--generate-entitlement-der"]
             if entitlements:
@@ -359,6 +366,7 @@ def sign_package(module, root, payload, p12, der, raw, profile, original_keys, p
         "registered_device_count": 1, "signed_macho_count": macho_count,
         "certificate_sha256": hashlib.sha256(der).hexdigest(),
         "profile_selection": "existing_wildcard_read_only", "apple_resources_created_or_modified": False,
+        "signing_identity_role": identity_role,
         "signature_verification": "codesign deep strict passed; nine bundles matched exact concrete entitlements and approved certificate",
         "original_entitlement_keys_not_granted": removed, "package_receipt": package_receipt,
         "device_installation": "not tested", "device_launch": "not tested", "scratch_behavior": "not tested",
@@ -392,7 +400,7 @@ def main(argv=None):
     with tempfile.TemporaryDirectory(prefix="bump-signing-", dir=os.environ["RUNNER_TEMP"]) as directory:
         root = Path(directory)
         STAGE = "identity_and_existing_profiles"
-        p12, primary_der, key, der, raw, profile = prepare_identity(module, root, not options.prepare)
+        p12, primary_der, key, der, raw, profile, password_env, identity_role = prepare_identity(module, root, not options.prepare)
         for suffix in SUFFIXES:
             bundle_entitlements(module, profile, ROOT_ID + suffix)
         if options.prepare:
@@ -403,6 +411,7 @@ def main(argv=None):
             readiness = {"input_certificate_sha256": hashlib.sha256(primary_der).hexdigest(),
                 "signing_certificate_sha256": hashlib.sha256(der).hexdigest(),
                 "existing_wildcard_bundle_coverage": len(SUFFIXES), "registered_device_count": 1,
+                "signing_identity_role": identity_role,
                 "source_commit": os.environ["GITHUB_SHA"], "apple_resources_created_or_modified": False,
                 "signed_ipa_created": False}
             (output / "readiness.json").write_text(json.dumps(readiness, indent=2) + "\n")
@@ -423,7 +432,7 @@ def main(argv=None):
         STAGE = "native_build_and_packaging"
         payload_root, package_receipt = build_package(module, root, original)
         STAGE = "signing_and_verification"
-        verification = sign_package(module, root, payload_root, p12, der, raw, profile, original_keys, package_receipt)
+        verification = sign_package(module, root, payload_root, p12, der, raw, profile, original_keys, package_receipt, password_env, identity_role)
         print("Bump signed IPA verified and recipient-encrypted. SHA256: " + verification["sha256"])
         print("Device installation, launch and scratch behavior were not tested. No Apple resources were changed.")
 
