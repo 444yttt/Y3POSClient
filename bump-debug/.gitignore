@@ -1,0 +1,9 @@
+output/
+__pycache__/
+*.pyc
+*.ipa
+*.p12
+*.p8
+*.mobileprovision
+*.cms
+.DS_Store

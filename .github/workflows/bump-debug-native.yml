@@ -1,0 +1,41 @@
+name: Bump location debugger native build
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'bump-debug/**'
+      - '.github/workflows/bump-debug-native.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    defaults:
+      run:
+        working-directory: bump-debug
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Test route engine and IPA packaging
+        run: python3 -m unittest discover -s tests -v
+      - name: Exercise callback injection and restoration
+        run: bash scripts/test-hooks-macos.sh
+      - name: Build ARM64 iOS library
+        run: bash scripts/ci-native.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: BumpLocationDebug-native-${{ github.sha }}
+          path: |
+            bump-debug/output/BumpLocationDebug.dylib
+            bump-debug/output/SHA256SUMS
+            bump-debug/output/hook-test-results.json
+          retention-days: 7
+          if-no-files-found: error

@@ -1,0 +1,349 @@
+{
+  "target": {
+    "bundle_identifier": "co.amo.ios.location",
+    "version": "2.135.0",
+    "build": "261126153935",
+    "ipa_sha256": "0b18338b5db68e39ba1de6f5e45c8c79d2211d25da58dc9d4ffa6783bb41773e",
+    "main_sha256": "5cfe7ed0c302e1a5bd420f99fe9d7c30a17425f0abce21c311601039ea18a71c",
+    "architecture": "arm64",
+    "encryption_cryptid": 0
+  },
+  "parser": {
+    "classlist_count": 7654,
+    "classlist_errors": 0,
+    "dyld_chained_pointer_format": 6,
+    "pointer_decode": "image_base + low 36-bit target for non-bind pointer; reject bind pointers",
+    "objc_method_format": "12-byte relative method entries, indirect/direct selector bit honored",
+    "classlist_section_address": "0x107d37ac8"
+  },
+  "verified_callback_allowlist": [
+    {
+      "name": "_TtC15LocationBindingP33_6C00B80C985AD151B6934B64C045240F19CoreLocationManager",
+      "class_address": "0x10803d5e0",
+      "ro_address": "0x10803d580",
+      "methods": [
+        {
+          "selector": "locationManager:didUpdateLocations:",
+          "types": "v32@0:8@16@24",
+          "entry": "0x10618ddf8",
+          "imp": "0x10260871c",
+          "selector_address": "0x10717a980",
+          "entry_bytes_hex": "90b1e201740e04011ca947fc",
+          "first_instructions_sha256": "8acb085a75ca996dbd85059e7b75368b9a39bb75b7ba6ad755f7ae00163ab80a"
+        },
+        {
+          "selector": "locationManager:didFailWithError:",
+          "types": "v32@0:8@16@24",
+          "entry": "0x10618de04",
+          "imp": "0x102608940",
+          "selector_address": "0x10717a840",
+          "entry_bytes_hex": "74b1e201680e040134ab47fc",
+          "first_instructions_sha256": "85b04205c50f6924af043494e1d1066ec6da6ffe8ef3032b22ae8b96dede4a11"
+        },
+        {
+          "selector": "init",
+          "types": "@16@0:8",
+          "entry": "0x10618de10",
+          "imp": "0x1026089cc",
+          "selector_address": "0x107164dc0",
+          "entry_bytes_hex": "908fe201aca20301b4ab47fc",
+          "first_instructions_sha256": "ce9b8f812d0a86749dea64a729975cfc49297730711d231dfc8b0e8550a66ad7"
+        },
+        {
+          "selector": ".cxx_destruct",
+          "types": "v16@0:8",
+          "entry": "0x10618de1c",
+          "imp": "0x1026089ec",
+          "selector_address": "0x107107170",
+          "entry_bytes_hex": "6c2be301b0020401c8ab47fc",
+          "first_instructions_sha256": "ac3192b1497a6d9e4e5003f3dbefe7624ab9291b676c25f4790384a7fdf8e9f7"
+        }
+      ],
+      "protocols": [
+        "CLLocationManagerDelegate"
+      ]
+    },
+    {
+      "name": "_TtC21LocationManagerShared23LocationManagerProvider",
+      "class_address": "0x10803d6a8",
+      "ro_address": "0x10803d648",
+      "methods": [
+        {
+          "selector": "init",
+          "types": "@16@0:8",
+          "entry": "0x106198278",
+          "imp": "0x10260956c",
+          "selector_address": "0x107164dc0",
+          "entry_bytes_hex": "28ebe10144fe0201ec1247fc",
+          "first_instructions_sha256": "b9b327f2eb0a64559e4f9acbe0bcabf0264aa00f048a200479523eedfb3c70fe"
+        },
+        {
+          "selector": "locationManager:didUpdateLocations:",
+          "types": "v32@0:8@16@24",
+          "entry": "0x106198284",
+          "imp": "0x102609990",
+          "selector_address": "0x10717a980",
+          "entry_bytes_hex": "040de201e8690301041747fc",
+          "first_instructions_sha256": "cbca180f27ab4667e08c9f624f8e4478de1dd8ecda311ecc212dba6b88a54731"
+        },
+        {
+          "selector": "locationManager:didFailWithError:",
+          "types": "v32@0:8@16@24",
+          "entry": "0x106198290",
+          "imp": "0x102609ad0",
+          "selector_address": "0x10717a840",
+          "entry_bytes_hex": "e80ce201dc690301381847fc",
+          "first_instructions_sha256": "a7d40c67f71639693d59f08739403710b73e9c47dc74f9aca5fc0be8248ec9cf"
+        },
+        {
+          "selector": "locationManager:didStartMonitoringForRegion:",
+          "types": "v32@0:8@16@24",
+          "entry": "0x10619829c",
+          "imp": "0x102609b80",
+          "selector_address": "0x10717a920",
+          "entry_bytes_hex": "e40ce201d0690301dc1847fc",
+          "first_instructions_sha256": "0b5a3af60b23106c6978f3f28a5d7c73c1515c1a380a8f8ba7344aea117d2b90"
+        },
+        {
+          "selector": "locationManager:monitoringDidFailForRegion:withError:",
+          "types": "v40@0:8@16@24@32",
+          "entry": "0x1061982a8",
+          "imp": "0x102609cd0",
+          "selector_address": "0x10717aa00",
+          "entry_bytes_hex": "f00ce201a4f40201201a47fc",
+          "first_instructions_sha256": "b6034a0b17f3da313435bd92c6bbee32ade6ec082dab49ae543c0046f9957fe5"
+        },
+        {
+          "selector": "locationManager:didEnterRegion:",
+          "types": "v32@0:8@16@24",
+          "entry": "0x1061982b4",
+          "imp": "0x102609d80",
+          "selector_address": "0x107114ac0",
+          "entry_bytes_hex": "b40ce201b8690301c41a47fc",
+          "first_instructions_sha256": "f4e17848f1247c14618be3a155b5c851f6915ec5bf7b279dca363029993b188d"
+        },
+        {
+          "selector": "locationManager:didExitRegion:",
+          "types": "v32@0:8@16@24",
+          "entry": "0x1061982c0",
+          "imp": "0x102609e0c",
+          "selector_address": "0x10717a7e0",
+          "entry_bytes_hex": "b00ce201ac690301441b47fc",
+          "first_instructions_sha256": "5fc2f887899562e0456d366e0ddbf29d7449537b022f837ea5a0cc5bcf1a01eb"
+        },
+        {
+          "selector": "locationManager:didVisit:",
+          "types": "v32@0:8@16@24",
+          "entry": "0x1061982cc",
+          "imp": "0x102609ee8",
+          "selector_address": "0x10717a9e0",
+          "entry_bytes_hex": "c40ce201a0690301141c47fc",
+          "first_instructions_sha256": "b356016d1df5e05b7bf9d2d72414cfbe27589e570f67b316be3b5b8eb22dd234"
+        },
+        {
+          "selector": ".cxx_destruct",
+          "types": "v16@0:8",
+          "entry": "0x1061982d8",
+          "imp": "0x102609f34",
+          "selector_address": "0x107107170",
+          "entry_bytes_hex": "b086e201f45d0301541c47fc",
+          "first_instructions_sha256": "5c4223368363d152af68188d948eb6baf69a46378515a945685c1fae88f663d3"
+        }
+      ],
+      "protocols": [
+        "CLLocationManagerDelegate"
+      ]
+    }
+  ],
+  "location_conversion_path": {
+    "objc_callback_imp": "0x10260871c",
+    "swift_body_call_address": "0x102608768",
+    "swift_body": "0x102608618",
+    "selection": "last CLLocation from non-empty incoming Swift array",
+    "conversion_call_address": "0x1026086b8",
+    "conversion_helper": "0x102609050",
+    "conversion_helper_selector_calls": [
+      {
+        "call_address": "0x1026090b8",
+        "objc_stub_address": "0x106151340",
+        "selector_reference_address": "0x107fb4640",
+        "selector": "coordinate"
+      },
+      {
+        "call_address": "0x1026090c4",
+        "objc_stub_address": "0x106151340",
+        "selector_reference_address": "0x107fb4640",
+        "selector": "coordinate"
+      },
+      {
+        "call_address": "0x1026090d0",
+        "objc_stub_address": "0x10615a0a0",
+        "selector_reference_address": "0x107fb69a0",
+        "selector": "horizontalAccuracy"
+      },
+      {
+        "call_address": "0x1026090dc",
+        "objc_stub_address": "0x106181040",
+        "selector_reference_address": "0x107fc05c0",
+        "selector": "verticalAccuracy"
+      },
+      {
+        "call_address": "0x1026090ec",
+        "objc_stub_address": "0x106154f00",
+        "selector_reference_address": "0x107fb5530",
+        "selector": "ellipsoidalAltitude"
+      },
+      {
+        "call_address": "0x1026090fc",
+        "objc_stub_address": "0x10614b020",
+        "selector_reference_address": "0x107fb2d70",
+        "selector": "altitude"
+      },
+      {
+        "call_address": "0x10260910c",
+        "objc_stub_address": "0x106181040",
+        "selector_reference_address": "0x107fc05c0",
+        "selector": "verticalAccuracy"
+      },
+      {
+        "call_address": "0x102609134",
+        "objc_stub_address": "0x10617bbc0",
+        "selector_reference_address": "0x107fbf0a0",
+        "selector": "speedAccuracy"
+      },
+      {
+        "call_address": "0x102609144",
+        "objc_stub_address": "0x10617bba0",
+        "selector_reference_address": "0x107fbf098",
+        "selector": "speed"
+      },
+      {
+        "call_address": "0x102609158",
+        "objc_stub_address": "0x10617bbc0",
+        "selector_reference_address": "0x107fbf0a0",
+        "selector": "speedAccuracy"
+      },
+      {
+        "call_address": "0x10260917c",
+        "objc_stub_address": "0x1061517a0",
+        "selector_reference_address": "0x107fb4758",
+        "selector": "courseAccuracy"
+      },
+      {
+        "call_address": "0x10260918c",
+        "objc_stub_address": "0x106151780",
+        "selector_reference_address": "0x107fb4750",
+        "selector": "course"
+      },
+      {
+        "call_address": "0x1026091ac",
+        "objc_stub_address": "0x10617b9c0",
+        "selector_reference_address": "0x107fbf020",
+        "selector": "sourceInformation"
+      },
+      {
+        "call_address": "0x1026091c0",
+        "objc_stub_address": "0x106161740",
+        "selector_reference_address": "0x107fb8780",
+        "selector": "isSimulatedBySoftware"
+      },
+      {
+        "call_address": "0x10260922c",
+        "objc_stub_address": "0x10617b9c0",
+        "selector_reference_address": "0x107fbf020",
+        "selector": "sourceInformation"
+      },
+      {
+        "call_address": "0x102609240",
+        "objc_stub_address": "0x1061611c0",
+        "selector_reference_address": "0x107fb8620",
+        "selector": "isProducedByAccessory"
+      },
+      {
+        "call_address": "0x1026092a8",
+        "objc_stub_address": "0x1061578c0",
+        "selector_reference_address": "0x107fb5fa0",
+        "selector": "floor"
+      },
+      {
+        "call_address": "0x1026092c4",
+        "objc_stub_address": "0x106162dc0",
+        "selector_reference_address": "0x107fb8d20",
+        "selector": "level"
+      },
+      {
+        "call_address": "0x102609310",
+        "objc_stub_address": "0x10617ea40",
+        "selector_reference_address": "0x107fbfc40",
+        "selector": "timestamp"
+      }
+    ],
+    "downstream_model_constructor_call": "0x102609370",
+    "downstream_model_constructor": "0x10260bc14"
+  },
+  "provider_forwarding_path": {
+    "objc_callback_imp": "0x102609990",
+    "swift_body_call_address": "0x1026099d4",
+    "swift_body": "0x1026098e0",
+    "forwarded_callback_selector_reference": "0x107fb8f88",
+    "callback_send_address": "0x102609978",
+    "callback_send_stub": "0x106163760"
+  },
+  "core_location_controls": [
+    {
+      "app_wrapper": "0x1026082c8",
+      "thunk": "0x1026082fc",
+      "objc_stub": "0x10617c420",
+      "selector_reference": "0x107fbf2b8",
+      "selector": "startUpdatingLocation"
+    },
+    {
+      "app_wrapper": "0x102608300",
+      "thunk": "0x102608334",
+      "objc_stub": "0x10617c920",
+      "selector_reference": "0x107fbf3f8",
+      "selector": "stopUpdatingLocation"
+    },
+    {
+      "app_wrapper": "0x102608788",
+      "thunk": "0x10260893c",
+      "objc_stub": "0x10617c800",
+      "selector_reference": "0x107fbf3b0",
+      "selector": "stopMonitoringSignificantLocationChanges"
+    }
+  ],
+  "other_classes_with_did_update_locations": [
+    {
+      "name": "_TtC9GhostModeP33_FC3399FCAE456BB99A78C1989F19B73127GhostModeLiveMotionObserver",
+      "callback": [
+        {
+          "selector": "locationManager:didUpdateLocations:",
+          "types": "v32@0:8@16@24",
+          "entry": "0x1061a8f9c",
+          "imp": "0x101931e44",
+          "selector_address": "0x10717a980"
+        }
+      ]
+    },
+    {
+      "name": "_TtC13MapServiceLib33MeUserApproximatedLocationFetcher",
+      "callback": [
+        {
+          "selector": "locationManager:didUpdateLocations:",
+          "types": "v32@0:8@16@24",
+          "entry": "0x10618a664",
+          "imp": "0x101edd92c",
+          "selector_address": "0x10717a980"
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "Static metadata and call sites do not establish actual runtime dispatch, callback thread/run-loop expectations, successful injection, server acceptance, or scratch-map change.",
+    "App conversion reads sourceInformation.isSimulatedBySoftware and isProducedByAccessory; observed branch records flags, but policy/rejection semantics are unproven.",
+    "No scratch-map direct call relationship has been proven.",
+    "LocationPushServiceExtension is a separate process and is not covered by this main-app callback evidence.",
+    "Absolute VM addresses are evidence only; hooks must resolve runtime class/selector and validate Objective-C method ABI.",
+    "Primary allowlist excludes GhostMode motion observer and MeUserApproximatedLocationFetcher intentionally; effect on all UI location indicators is unproven."
+  ]
+}
