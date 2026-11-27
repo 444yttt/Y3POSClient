@@ -7,6 +7,7 @@ on:
       - 'bump-signing-input.json'
       - 'bump-delivery-recipient.pem'
       - 'bump-inventory-existing.flag'
+      - 'bump-reuse-wildcard.flag'
       - '.github/workflows/bump-debug-sign.yml'
   workflow_dispatch:
 permissions:
@@ -34,6 +35,8 @@ jobs:
         run: |
           python3 -m unittest discover -s bump-debug/tests -p test_signer.py -v
           python3 -m unittest discover -s bump-debug/tests -p test_inventory.py -v
+          python3 -m unittest discover -s bump-debug/tests -p test_ci_scope.py -v
+          python3 -m unittest discover -s bump-debug/tests -p test_existing_wildcard.py -v
       - name: Verify final native source before signing
         if: ${{ hashFiles('bump-signing-input.json') != '' }}
         working-directory: bump-debug
@@ -53,7 +56,9 @@ jobs:
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          if [[ -f bump-inventory-existing.flag ]]; then
+          if [[ -f bump-reuse-wildcard.flag ]]; then
+            python3 scripts/bump-resign.py --prepare-existing-wildcard
+          elif [[ -f bump-inventory-existing.flag ]]; then
             python3 scripts/bump-resign.py --inventory-existing
           elif [[ -f bump-signing-input.json ]]; then
             python3 scripts/bump-resign.py

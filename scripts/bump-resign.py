@@ -33,10 +33,18 @@ PROFILE_HELPER_SHA256 = "628459c1f26615a8defa2d671e38630cdfeec409ddf6cac13f417e5
 MACHO_MAGICS = frozenset((b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe",
     b"\xfe\xed\xfa\xce", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"))
 STAGE = "startup"
+AUTHORIZED_REPOSITORIES = frozenset(("444yttt/Y3POSClient", "444yttt/Y3FloorGuide"))
 
 
 class BumpError(RuntimeError):
     """A fixed diagnostic suitable for public CI logs."""
+
+
+def validate_ci_scope(repository, ref, source_commit):
+    if repository not in AUTHORIZED_REPOSITORIES or ref != "refs/heads/main":
+        raise BumpError("authorized_ci_scope_required")
+    if not isinstance(source_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", source_commit):
+        raise BumpError("source_commit_missing")
 
 
 def safe_failure(error):
@@ -701,6 +709,134 @@ def prepare_identity(module, root, need_private_key, create_profiles=False):
         "password_env": password_env, "identity_role": identity_role, "profile_selection": selection, "statistics": statistics}
 
 
+def wildcard_registration(resource):
+    """An existing iOS/all-platform wildcard must authorize every fixed Bump ID."""
+    if not isinstance(resource, dict) or resource.get("type") != "bundleIds":
+        raise BumpError("invalid_existing_wildcard_registration")
+    attributes = resource.get("attributes", {})
+    grant = attributes.get("identifier")
+    if (attributes.get("platform") not in ("IOS", "UNIVERSAL") or not isinstance(grant, str) or
+            not re.fullmatch(r"\*|[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.\*", grant) or
+            not all(inventory_grant_matches(grant, ROOT_ID + suffix) for suffix in SUFFIXES)):
+        raise BumpError("existing_wildcard_does_not_cover_bump")
+    return resource_id(resource.get("id")), grant
+
+
+class ExistingWildcardProfileAPI(ReadOnlyAPI):
+    """One profile creation bound to a validated existing wildcard and assets."""
+    def __init__(self, api, certificate_id, device_id, registration):
+        super().__init__(api)
+        self.bundle_id, _ = wildcard_registration(registration)
+        self.certificate_id, self.device_id = resource_id(certificate_id), resource_id(device_id)
+        self.posted = False
+
+    def request(self, method, path, body=None):
+        if method == "GET":
+            return self.api.request(method, path, body)
+        expected = {"data": {"type": "profiles", "attributes": {
+            "name": "BumpLocationDebug-ExistingWildcard-AdHoc", "profileType": "IOS_APP_ADHOC"},
+            "relationships": {"bundleId": {"data": {"type": "bundleIds", "id": self.bundle_id}},
+                "certificates": {"data": [{"type": "certificates", "id": self.certificate_id}]},
+                "devices": {"data": [{"type": "devices", "id": self.device_id}]}}}}
+        if method != "POST" or path != "/v1/profiles" or body != expected:
+            raise BumpError("existing_wildcard_profile_write_outside_scope")
+        if self.posted:
+            raise BumpError("duplicate_existing_wildcard_profile_write")
+        self.posted = True
+        return self.api.request(method, path, body)
+
+
+def existing_wildcard_proof(module, registration, resource, team, udid):
+    """Prove current official grant/device scope independently of its old key."""
+    _, grant = wildcard_registration(registration)
+    attributes = resource.get("attributes", {})
+    if attributes.get("profileType") != "IOS_APP_ADHOC" or attributes.get("profileState") != "ACTIVE":
+        raise BumpError("existing_wildcard_profile_not_active_adhoc")
+    raw = module.helper.decode_base64(attributes.get("profileContent", ""))
+    if not 1 <= len(raw) <= 10 * 1024 * 1024:
+        raise BumpError("invalid_existing_wildcard_profile_content")
+    profile = plistlib.loads(module.run(["openssl", "cms", "-verify", "-inform", "DER", "-noverify"], raw))
+    proof = analyze_inventory_profile(profile, {}, team, udid, attributes)
+    if (proof["application_identifier_grant"] != grant or not all(proof[key] for key in (
+            "registered_device_set_matches", "current_validity", "team_matches_existing_identity",
+            "application_prefix_consistent", "profile_metadata_matches")) or
+            profile["Entitlements"].get("get-task-allow") is not False):
+        raise BumpError("existing_wildcard_profile_grant_proof_failed")
+    for suffix in SUFFIXES:
+        module.existing_wildcard_entitlements(profile, ROOT_ID + suffix)
+    return raw, profile
+
+
+def prepare_existing_wildcard(module, root):
+    """Explicitly reuse/reissue one profile for an already registered wildcard."""
+    _, der, _, asc = module.decode_identity(root, need_private_key=False)
+    underlying = module.RefreshingAppleAPI(asc)
+    api = ReadOnlyAPI(underlying)
+    certificate, device = module.signing_readiness(api, der)
+    team, udid = os.environ["APPLE_TEAM_ID"], device["attributes"]["udid"]
+    registrations = api.collection("/v1/bundleIds", {"fields[bundleIds]": "identifier,platform"})
+    compatible = []
+    for resource in registrations:
+        try:
+            wildcard_registration(resource)
+            compatible.append(resource)
+        except BumpError:
+            continue
+    if len(compatible) != 1:
+        raise BumpError("existing_wildcard_registration_not_unique" if compatible else "existing_wildcard_registration_missing")
+    registration = compatible[0]
+    bundle_id, _ = wildcard_registration(registration)
+    candidates = api.collection("/v1/bundleIds/" + bundle_id + "/profiles", {
+        "fields[profiles]": "uuid,profileType,profileState,profileContent,expirationDate"})
+    candidates = [item for item in candidates if item.get("attributes", {}).get("profileType") == "IOS_APP_ADHOC" and item.get("attributes", {}).get("profileState") == "ACTIVE"]
+    expected_identifiers = {ROOT_ID + suffix for suffix in SUFFIXES}
+    has_existing_grant_proof, matching_profile = False, False
+    for candidate in candidates:
+        # A failed read is never treated as permission to create a duplicate.
+        if not candidate["attributes"].get("profileContent"):
+            candidate = api.request("GET", "/v1/profiles/" + resource_id(candidate.get("id")))["data"]
+        try:
+            existing_wildcard_proof(module, registration, candidate, team, udid)
+            has_existing_grant_proof = True
+        except (RuntimeError, ValueError, TypeError, KeyError):
+            continue
+        try:
+            compatibility = module.probe_profile_compatibility(candidate, der, team, udid)
+            if compatibility["application_identifier_kind"] == "wildcard" and set(compatibility["compatible_scoped_identifiers"]) == expected_identifiers:
+                matching_profile = True
+                break
+        except (RuntimeError, ValueError, TypeError, KeyError):
+            continue
+    if not has_existing_grant_proof:
+        raise BumpError("no_current_existing_wildcard_profile_grant_proof")
+    if not matching_profile:
+        scoped = ExistingWildcardProfileAPI(underlying, certificate["id"], device["id"], registration)
+        created = scoped.request("POST", "/v1/profiles", {"data": {"type": "profiles", "attributes": {
+            "name": "BumpLocationDebug-ExistingWildcard-AdHoc", "profileType": "IOS_APP_ADHOC"},
+            "relationships": {"bundleId": {"data": {"type": "bundleIds", "id": bundle_id}},
+                "certificates": {"data": [{"type": "certificates", "id": certificate["id"]}]},
+                "devices": {"data": [{"type": "devices", "id": device["id"]}]}}}})["data"]
+        if not created.get("attributes", {}).get("profileContent"):
+            created = scoped.request("GET", "/v1/profiles/" + resource_id(created.get("id")))["data"]
+        existing_wildcard_proof(module, registration, created, team, udid)
+        compatibility = module.probe_profile_compatibility(created, der, team, udid)
+        if compatibility["application_identifier_kind"] != "wildcard" or set(compatibility["compatible_scoped_identifiers"]) != expected_identifiers:
+            raise BumpError("created_existing_wildcard_profile_scope_mismatch")
+    output = Path("bump-public")
+    output.mkdir(exist_ok=True)
+    (output / "signing-public-key.pem").write_bytes(module.run(["openssl", "x509", "-inform", "DER", "-pubkey", "-noout"], der))
+    receipt = {"source_commit": os.environ["GITHUB_SHA"], "input_certificate_sha256": hashlib.sha256(der).hexdigest(),
+        "signing_certificate_sha256": hashlib.sha256(der).hexdigest(), "signing_identity_role": "existing_primary",
+        "profile_selection": "existing_wildcard_registration_profile", "validated_bundle_coverage": len(SUFFIXES),
+        "registered_device_count": 1, "created_bundle_count": 0, "created_profile_count": 0 if matching_profile else 1,
+        "reused_profile_count": 1 if matching_profile else 0, "existing_bundle_registration_unchanged": True,
+        "apple_resources_created_or_modified": not matching_profile, "signed_ipa_created": False}
+    (output / "readiness.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    print("Existing wildcard registration validated. Created Ad Hoc profiles: " + str(receipt["created_profile_count"]) +
+        "; reused profiles: " + str(receipt["reused_profile_count"]) + ". No bundle, certificate, device or capability changes.")
+    return receipt
+
+
 def build_package(module, root, original):
     source = Path("bump-debug").resolve()
     import subprocess
@@ -809,11 +945,9 @@ def main(argv=None):
     modes.add_argument("--prepare", action="store_true", help="Read-only signing readiness and public encryption key")
     modes.add_argument("--prepare-profiles", action="store_true", help="Create/reuse only the nine scoped Bump registrations and Ad Hoc profiles")
     modes.add_argument("--inventory-existing", action="store_true", help="Read-only encrypted inventory of existing profiles, independent of the Bump namespace")
+    modes.add_argument("--prepare-existing-wildcard", action="store_true", help="Reuse an existing wildcard registration and create at most one scoped Ad Hoc profile")
     options = parser.parse_args(argv)
-    if os.environ.get("GITHUB_REPOSITORY") != "444yttt/Y3POSClient" or os.environ.get("GITHUB_REF") != "refs/heads/main":
-        raise BumpError("authorized_ci_scope_required")
-    if not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", "")):
-        raise BumpError("source_commit_missing")
+    validate_ci_scope(os.environ.get("GITHUB_REPOSITORY"), os.environ.get("GITHUB_REF"), os.environ.get("GITHUB_SHA"))
     STAGE = "helper_validation"
     module = load_signer()
     module.configure_openssl()
@@ -823,6 +957,10 @@ def main(argv=None):
         if options.inventory_existing:
             STAGE = "read_only_existing_profile_inventory"
             inventory_existing(module, root)
+            return
+        if options.prepare_existing_wildcard:
+            STAGE = "existing_wildcard_profile_preparation"
+            prepare_existing_wildcard(module, root)
             return
         STAGE = "identity_and_existing_profiles"
         preparing = options.prepare or options.prepare_profiles
