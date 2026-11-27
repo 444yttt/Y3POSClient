@@ -248,6 +248,7 @@ static void (*BLDOriginalSignificantStart)(id, SEL);
 static void (*BLDOriginalSignificantStop)(id, SEL);
 static void (*BLDOriginalRequest)(id, SEL);
 static CLLocation *(*BLDOriginalLocation)(id, SEL);
+#ifndef BLD_TEST_HOST
 static NSURL *(*BLDOriginalGroupContainer)(id, SEL, NSString *);
 
 static NSURL *BLDGroupContainer(id manager, SEL selector, NSString *group) {
@@ -263,6 +264,7 @@ static NSURL *BLDGroupContainer(id manager, SEL selector, NSString *group) {
     if (![files createDirectoryAtURL:fallback withIntermediateDirectories:YES attributes:nil error:&error]) return nil;
     return fallback;
 }
+#endif
 
 static void BLDSetDelegate(id manager, SEL selector, id delegate) {
     BLDOriginalSetDelegate(manager, selector, delegate);

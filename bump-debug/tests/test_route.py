@@ -18,7 +18,13 @@ class RouteTests(unittest.TestCase):
                    "-lm", "-o", str(binary)],
                 check=True,
             )
-            result = subprocess.run([str(binary)], capture_output=True, text=True, check=True)
+            result = subprocess.run([str(binary)], capture_output=True, text=True)
+            self.assertEqual(
+                result.returncode,
+                0,
+                f"Route executable exited with {result.returncode}\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+            )
             self.assertIn("Route tests passed", result.stdout)
 
 

@@ -36,6 +36,6 @@ jobs:
           path: |
             bump-debug/output/BumpLocationDebug.dylib
             bump-debug/output/SHA256SUMS
-            bump-debug/output/hook-test-results.json
+            bump-debug/output/hook-tests.json
           retention-days: 7
           if-no-files-found: error

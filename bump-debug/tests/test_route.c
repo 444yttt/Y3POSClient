@@ -8,13 +8,16 @@
 
 static const double pi = 3.14159265358979323846;
 
-static void close_to(double actual, double expected, double tolerance) {
+static void close_to_at(double actual, double expected, double tolerance, int line) {
     if (!(fabs(actual - expected) <= tolerance)) {
-        fprintf(stderr, "actual %.17g, expected %.17g (+/- %.17g)\n",
-                actual, expected, tolerance);
+        fprintf(stderr, "route test line %d: actual %.17g, expected %.17g (+/- %.17g)\n",
+                line, actual, expected, tolerance);
         assert(0);
     }
 }
+
+#define close_to(actual, expected, tolerance) \
+    close_to_at((actual), (expected), (tolerance), __LINE__)
 
 static void valid_sample(BLDSample sample) {
     assert(BLDPointIsValid(sample.point));
@@ -101,7 +104,7 @@ static void stationary_and_duplicates(void) {
 static void reject_invalid(void) {
     BLDPoint points[] = {{0.0, 0.0}, {1.0, 1.0}};
     BLDSample sentinel = {{12.0, 34.0}, 56.0, 78.0, 9}, result;
-#define REJECT(call) do { result = sentinel; assert(!(call)); \
+#define REJECT(call) do { memcpy(&result, &sentinel, sizeof(result)); assert(!(call)); \
                          assert(memcmp(&result, &sentinel, sizeof(result)) == 0); } while (0)
     REJECT(BLDRouteSample(NULL, 1, 1.0, 1.0, &result));
     REJECT(BLDRouteSample(points, 0, 1.0, 1.0, &result));
