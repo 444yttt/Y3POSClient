@@ -142,7 +142,10 @@ static void maximum_path_and_symmetry(void) {
            s.point.longitude < points[BLD_ROUTE_MAX_POINTS - 1].longitude);
     BLDPoint a = {35.6581, 139.7017}, b = {40.7128, -74.0060};
     close_to(BLDDistance(a, b), BLDDistance(b, a), 1e-7);
-    close_to(BLDDistance(a, a), 0.0, 0.0);
+    /* A fused multiply/subtract in the unit-vector cross product can leave a
+       sub-nanometre residual for equal points. Ten nanometres is approximately
+       8 * DBL_EPSILON * Earth radius and remains 100x below duplicate tolerance. */
+    close_to(BLDDistance(a, a), 0.0, 1e-8);
     double distance = BLDDistance(a, b);
     BLDPoint route[] = {a, b};
     assert(BLDRouteSample(route, 2, 10.0, distance / 20.0, &s));

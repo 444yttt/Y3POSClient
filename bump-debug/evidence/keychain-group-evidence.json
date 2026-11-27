@@ -1,0 +1,445 @@
+{
+  "target": {
+    "bundle_identifier": "co.amo.ios.location",
+    "version": "2.135.0",
+    "build": "261126153935",
+    "ipa_sha256": "0b18338b5db68e39ba1de6f5e45c8c79d2211d25da58dc9d4ffa6783bb41773e",
+    "main_sha256": "5cfe7ed0c302e1a5bd420f99fe9d7c30a17425f0abce21c311601039ea18a71c"
+  },
+  "source_entitlement_summary": {
+    "app_groups": [
+      "group.co.amo"
+    ],
+    "keychain_group_suffixes": [
+      "co.amo.shared-group",
+      "*",
+      "com.apple.token"
+    ],
+    "original_team_prefix_redacted": true,
+    "source_entitlement_identity_is_not_reusable_by_other_signing_team": true
+  },
+  "bundle_info_group_configuration": [
+    {
+      "path": "Payload/Location.app/Info.plist",
+      "app_group_id": "group.co.amo",
+      "keychain_shared_group_suffix": "co.amo.shared-group",
+      "keychain_prefix_redacted": true,
+      "same_group_config_as_main": true
+    },
+    {
+      "path": "Payload/Location.app/PlugIns/LocationPushServiceExtension.appex/Info.plist",
+      "app_group_id": "group.co.amo",
+      "keychain_shared_group_suffix": "co.amo.shared-group",
+      "keychain_prefix_redacted": true,
+      "same_group_config_as_main": true
+    },
+    {
+      "path": "Payload/Location.app/PlugIns/FriendWidget.appex/Info.plist",
+      "app_group_id": "group.co.amo",
+      "keychain_shared_group_suffix": "co.amo.shared-group",
+      "keychain_prefix_redacted": true,
+      "same_group_config_as_main": true
+    },
+    {
+      "path": "Payload/Location.app/PlugIns/NotificationContentExtension.appex/Info.plist",
+      "app_group_id": "group.co.amo",
+      "keychain_shared_group_suffix": "co.amo.shared-group",
+      "keychain_prefix_redacted": true,
+      "same_group_config_as_main": true
+    },
+    {
+      "path": "Payload/Location.app/PlugIns/FriendIntentsExtension.appex/Info.plist",
+      "app_group_id": "group.co.amo",
+      "keychain_shared_group_suffix": "co.amo.shared-group",
+      "keychain_prefix_redacted": true,
+      "same_group_config_as_main": true
+    },
+    {
+      "path": "Payload/Location.app/PlugIns/OnMyWayLiveActivityExtension.appex/Info.plist",
+      "app_group_id": "group.co.amo",
+      "keychain_shared_group_suffix": "co.amo.shared-group",
+      "keychain_prefix_redacted": true,
+      "same_group_config_as_main": true
+    },
+    {
+      "path": "Payload/Location.app/PlugIns/NotificationServiceExtension.appex/Info.plist",
+      "app_group_id": "group.co.amo",
+      "keychain_shared_group_suffix": "co.amo.shared-group",
+      "keychain_prefix_redacted": true,
+      "same_group_config_as_main": true
+    },
+    {
+      "path": "Payload/Location.app/PlugIns/LocationMessageStickersExtension.appex/Info.plist",
+      "app_group_id": "group.co.amo",
+      "keychain_shared_group_suffix": "co.amo.shared-group",
+      "keychain_prefix_redacted": true,
+      "same_group_config_as_main": true
+    },
+    {
+      "path": "Payload/Location.app/PlugIns/ShareExtension.appex/Info.plist",
+      "app_group_id": "group.co.amo",
+      "keychain_shared_group_suffix": "co.amo.shared-group",
+      "keychain_prefix_redacted": true,
+      "same_group_config_as_main": true
+    }
+  ],
+  "native_configuration": {
+    "runtime_class": "_TtC7Release9BuildInfo",
+    "metadata_address": "0x1080f01e0",
+    "initializer": "0x1000259fc",
+    "bundle_main_call_address": "0x100025a2c",
+    "info_dictionary_call_address": "0x100025a3c",
+    "dictionary_lookup_function": "0x10019c048",
+    "app_group": {
+      "key": "APP_GROUP_ID",
+      "key_materialization_start": "0x100025be8",
+      "dictionary_lookup_call": "0x100025c0c",
+      "instance_field_offset": "0x38",
+      "field_store": {
+        "address": "0x100025c68",
+        "bytes_hex": "68a603a9"
+      }
+    },
+    "keychain_group": {
+      "key": "KEYCHAIN_SHARED_GROUP",
+      "cstring_address": "0x1062383a0",
+      "key_reference_start": "0x100025e58",
+      "dictionary_lookup_call": "0x100025e74",
+      "instance_field_offset": "0x48",
+      "field_store": {
+        "address": "0x100025ed0",
+        "bytes_hex": "68a604a9"
+      }
+    },
+    "shared_instance_accessor": "0x100c18260",
+    "shared_instance_global": "0x108689b90"
+  },
+  "foundation_app_group_container_api": {
+    "selector": "containerURLForSecurityApplicationGroupIdentifier:",
+    "selector_address": "0x107142695",
+    "selector_reference": "0x107fb43e8",
+    "objc_stub": "0x1061509e0",
+    "verified_direct_calls": [
+      "0x10003c18c",
+      "0x100c1837c",
+      "0x1024c9a68",
+      "0x102585cac",
+      "0x102be3f24",
+      "0x1031801c8",
+      "0x104067c98"
+    ],
+    "configuration_field_load_examples": [
+      {
+        "load": "0x100c18368",
+        "field_offset": "0x38",
+        "call": "0x100c1837c"
+      },
+      {
+        "load": "0x10318019c",
+        "field_offset": "0x38",
+        "call": "0x1031801c8"
+      }
+    ]
+  },
+  "native_keychain_query_evidence": {
+    "class": "_TtC15KeychainBinding12KeychainImpl",
+    "class_metadata_address": "0x1081d88e0",
+    "kSecAttrAccessGroup_import": "0x107d5c350",
+    "set": {
+      "function": "0x102586f18",
+      "input_group_swift_string_registers": [
+        "x0",
+        "x1"
+      ],
+      "kSecAttrAccessGroup_load": "0x102586fd4",
+      "group_value_stores": [
+        "0x102586fe8",
+        "0x102586ff0"
+      ],
+      "add_helper": "0x1025879f8",
+      "add_tailcall": "0x102587a00",
+      "update_call": "0x10258725c"
+    },
+    "get": {
+      "function": "0x1025873fc",
+      "input_group_swift_string_registers": [
+        "x0",
+        "x1"
+      ],
+      "kSecAttrAccessGroup_load": "0x1025874e4",
+      "group_value_store": {
+        "address": "0x1025874f4",
+        "bytes_hex": "1aef0ca9"
+      },
+      "copy_matching_call": "0x1025875a4"
+    },
+    "delete": {
+      "function": "0x102587700",
+      "input_group_swift_string_registers": [
+        "x0",
+        "x1"
+      ],
+      "kSecAttrAccessGroup_load": "0x10258778c",
+      "group_value_store": {
+        "address": "0x1025877a0",
+        "bytes_hex": "1adf07a9"
+      },
+      "delete_call": "0x10258780c"
+    },
+    "all_direct_SecItem_call_sites": [
+      {
+        "call": "0x1001cb848",
+        "stub": "0x1061453f8",
+        "symbol": "_SecItemCopyMatching",
+        "got": "0x107d5c2d8"
+      },
+      {
+        "call": "0x1001cb938",
+        "stub": "0x106145404",
+        "symbol": "_SecItemDelete",
+        "got": "0x107d5c2e0"
+      },
+      {
+        "call": "0x1001f8654",
+        "stub": "0x1061453f8",
+        "symbol": "_SecItemCopyMatching",
+        "got": "0x107d5c2d8"
+      },
+      {
+        "call": "0x1001f87bc",
+        "stub": "0x106145410",
+        "symbol": "_SecItemUpdate",
+        "got": "0x107d5c2e8"
+      },
+      {
+        "call": "0x1001f880c",
+        "stub": "0x1061453ec",
+        "symbol": "_SecItemAdd",
+        "got": "0x107d5c2d0"
+      },
+      {
+        "call": "0x1001f891c",
+        "stub": "0x106145404",
+        "symbol": "_SecItemDelete",
+        "got": "0x107d5c2e0"
+      },
+      {
+        "call": "0x1002d80e8",
+        "stub": "0x106145410",
+        "symbol": "_SecItemUpdate",
+        "got": "0x107d5c2e8"
+      },
+      {
+        "call": "0x1002d811c",
+        "stub": "0x1061453ec",
+        "symbol": "_SecItemAdd",
+        "got": "0x107d5c2d0"
+      },
+      {
+        "call": "0x1002d82fc",
+        "stub": "0x106145404",
+        "symbol": "_SecItemDelete",
+        "got": "0x107d5c2e0"
+      },
+      {
+        "call": "0x1002d8400",
+        "stub": "0x106145410",
+        "symbol": "_SecItemUpdate",
+        "got": "0x107d5c2e8"
+      },
+      {
+        "call": "0x1002d85bc",
+        "stub": "0x1061453f8",
+        "symbol": "_SecItemCopyMatching",
+        "got": "0x107d5c2d8"
+      },
+      {
+        "call": "0x1002d8710",
+        "stub": "0x1061453f8",
+        "symbol": "_SecItemCopyMatching",
+        "got": "0x107d5c2d8"
+      },
+      {
+        "call": "0x101172700",
+        "stub": "0x1061453f8",
+        "symbol": "_SecItemCopyMatching",
+        "got": "0x107d5c2d8"
+      },
+      {
+        "call": "0x101172988",
+        "stub": "0x1061453ec",
+        "symbol": "_SecItemAdd",
+        "got": "0x107d5c2d0"
+      },
+      {
+        "call": "0x101172a44",
+        "stub": "0x106145410",
+        "symbol": "_SecItemUpdate",
+        "got": "0x107d5c2e8"
+      },
+      {
+        "call": "0x101172b44",
+        "stub": "0x106145404",
+        "symbol": "_SecItemDelete",
+        "got": "0x107d5c2e0"
+      },
+      {
+        "call": "0x102587154",
+        "stub": "0x106145404",
+        "symbol": "_SecItemDelete",
+        "got": "0x107d5c2e0"
+      },
+      {
+        "call": "0x10258725c",
+        "stub": "0x106145410",
+        "symbol": "_SecItemUpdate",
+        "got": "0x107d5c2e8"
+      },
+      {
+        "call": "0x10258730c",
+        "stub": "0x106145404",
+        "symbol": "_SecItemDelete",
+        "got": "0x107d5c2e0"
+      },
+      {
+        "call": "0x1025875a4",
+        "stub": "0x1061453f8",
+        "symbol": "_SecItemCopyMatching",
+        "got": "0x107d5c2d8"
+      },
+      {
+        "call": "0x10258780c",
+        "stub": "0x106145404",
+        "symbol": "_SecItemDelete",
+        "got": "0x107d5c2e0"
+      },
+      {
+        "call": "0x102587a00",
+        "stub": "0x1061453ec",
+        "symbol": "_SecItemAdd",
+        "got": "0x107d5c2d0"
+      },
+      {
+        "call": "0x102d96f38",
+        "stub": "0x1061453f8",
+        "symbol": "_SecItemCopyMatching",
+        "got": "0x107d5c2d8"
+      },
+      {
+        "call": "0x102db8938",
+        "stub": "0x106145404",
+        "symbol": "_SecItemDelete",
+        "got": "0x107d5c2e0"
+      },
+      {
+        "call": "0x102db89cc",
+        "stub": "0x106145404",
+        "symbol": "_SecItemDelete",
+        "got": "0x107d5c2e0"
+      },
+      {
+        "call": "0x10322c2fc",
+        "stub": "0x106145404",
+        "symbol": "_SecItemDelete",
+        "got": "0x107d5c2e0"
+      },
+      {
+        "call": "0x10322c6fc",
+        "stub": "0x1061453f8",
+        "symbol": "_SecItemCopyMatching",
+        "got": "0x107d5c2d8"
+      },
+      {
+        "call": "0x10322c924",
+        "stub": "0x1061453ec",
+        "symbol": "_SecItemAdd",
+        "got": "0x107d5c2d0"
+      },
+      {
+        "call": "0x10322c9f8",
+        "stub": "0x106145404",
+        "symbol": "_SecItemDelete",
+        "got": "0x107d5c2e0"
+      },
+      {
+        "call": "0x10322ca04",
+        "stub": "0x1061453ec",
+        "symbol": "_SecItemAdd",
+        "got": "0x107d5c2d0"
+      },
+      {
+        "call": "0x10322caac",
+        "stub": "0x106145410",
+        "symbol": "_SecItemUpdate",
+        "got": "0x107d5c2e8"
+      },
+      {
+        "call": "0x10322cb68",
+        "stub": "0x106145404",
+        "symbol": "_SecItemDelete",
+        "got": "0x107d5c2e0"
+      },
+      {
+        "call": "0x10322cb74",
+        "stub": "0x1061453ec",
+        "symbol": "_SecItemAdd",
+        "got": "0x107d5c2d0"
+      },
+      {
+        "call": "0x104088170",
+        "stub": "0x1061453f8",
+        "symbol": "_SecItemCopyMatching",
+        "got": "0x107d5c2d8"
+      },
+      {
+        "call": "0x1040881f8",
+        "stub": "0x1061453ec",
+        "symbol": "_SecItemAdd",
+        "got": "0x107d5c2d0"
+      },
+      {
+        "call": "0x104088338",
+        "stub": "0x106145404",
+        "symbol": "_SecItemDelete",
+        "got": "0x107d5c2e0"
+      },
+      {
+        "call": "0x1040883d0",
+        "stub": "0x106145410",
+        "symbol": "_SecItemUpdate",
+        "got": "0x107d5c2e8"
+      },
+      {
+        "call": "0x1040884cc",
+        "stub": "0x1061453f8",
+        "symbol": "_SecItemCopyMatching",
+        "got": "0x107d5c2d8"
+      },
+      {
+        "call": "0x10408853c",
+        "stub": "0x106145410",
+        "symbol": "_SecItemUpdate",
+        "got": "0x107d5c2e8"
+      },
+      {
+        "call": "0x1040886d8",
+        "stub": "0x1061453f8",
+        "symbol": "_SecItemCopyMatching",
+        "got": "0x107d5c2d8"
+      }
+    ]
+  },
+  "compatibility_assessment": [
+    "Source APP_GROUP_ID is provided through each bundle Info.plist; a signed build can remap this configuration to a genuinely provisioned replacement group, if such a group is granted.",
+    "KEYCHAIN_SHARED_GROUP is also configurable through Info.plist and native query methods use explicit access groups; any replacement must be an exact group genuinely granted by the selected signed profile.",
+    "A main-app-only Foundation fallback to its own sandbox may avoid nil group-container URLs but cannot create shared storage across the eight extension processes.",
+    "No foreign keychain access, authentication logic modification, or binary patch has been implemented by this analysis."
+  ],
+  "limitations": [
+    "Full BuildInfo.keychainSharedGroup propagation through Swift/Rust initialization to each KeychainBinding call has not been independently traced. Field/key semantics and native explicit-group query paths are proven separately.",
+    "No conclusions about existing authentication tokens or token contents were drawn; no token values were read.",
+    "No runtime startup, authentication persistence, extension behavior, or different-team provisioning was tested.",
+    "Foundation direct-call scan covers B/BL targets to the identified Objective-C stub; dynamically generated or indirect call sites may exist.",
+    "App Group/Keychain entitlements, extension parent IDs, notification and location-push capabilities must be validated from the actual replacement profiles rather than assumed from the original signing."
+  ]
+}
