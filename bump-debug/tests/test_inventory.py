@@ -13,6 +13,11 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "ci/bump-resign.py"
@@ -213,6 +218,8 @@ class InventoryPrivacyTests(unittest.TestCase):
 
             def collection(self, path, query=None):
                 self.collections.append((path, query))
+                if path == "/v1/certificates":
+                    return []
                 if path != "/v1/profiles":
                     raise AssertionError("Unexpected inventory collection")
                 return [active, store, inactive]
@@ -274,7 +281,8 @@ class InventoryPrivacyTests(unittest.TestCase):
             self.assertFalse(summary["apple_resources_created_or_modified"])
             self.assertFalse(summary["signed_ipa_created"])
             self.assertEqual(api.requests, [("GET", "/v1/profiles/ADHOC1")])
-            self.assertEqual([path for path, _ in api.collections], ["/v1/profiles"])
+            self.assertIn("/v1/profiles", [path for path, _ in api.collections])
+            self.assertTrue(all(path in ("/v1/profiles", "/v1/certificates") for path, _ in api.collections))
             self.assertEqual(len(encrypted_plaintexts), 1)
             self.assertIn("com.example.*", encrypted_plaintexts[0])
             self.assertEqual(json.loads(encrypted_plaintexts[0]), report)
@@ -284,6 +292,82 @@ class InventoryPrivacyTests(unittest.TestCase):
             self.assertEqual({str(path.relative_to(work)) for path in work.rglob("*") if path.is_file()}, {
                 "bump-public/signing-public-key.pem", "bump-public/inventory-summary.json",
                 "bump-output/BumpLocationDebug-profile-inventory.cms"})
+
+
+class InventorySameKeyEvidenceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        cls.other_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        cls.identity_certificate = cls.certificate(cls.private_key, 76435101)
+        cls.reissued_certificate = cls.certificate(cls.private_key, 76435102)
+        cls.foreign_key_certificate = cls.certificate(cls.other_key, 76435103)
+
+    @classmethod
+    def certificate(cls, key, serial, team=TEAM, expired=False):
+        now = dt.datetime.now(dt.timezone.utc)
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "private-subject-marker"),
+            x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, team)])
+        certificate = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
+            .public_key(key.public_key()).serial_number(serial)
+            .not_valid_before(now - dt.timedelta(days=60))
+            .not_valid_after(now - dt.timedelta(days=1) if expired else now + dt.timedelta(days=30))
+            .sign(key, hashes.SHA256()))
+        return certificate.public_bytes(serialization.Encoding.DER)
+
+    def catalog(self, certificate, **attributes):
+        return [{"type": "certificates", "id": "fixture-certificate-resource", "attributes": {
+            "certificateContent": base64.b64encode(certificate).decode(), "certificateType": "IOS_DISTRIBUTION",
+            "expirationDate": "2100-01-01T00:00:00Z", **attributes}}]
+
+    def analyze(self, certificate, catalog):
+        candidate = profile()
+        candidate["DeveloperCertificates"] = [certificate]
+        return SIGNER.analyze_inventory_profile(candidate, {"existing_primary": self.identity_certificate},
+            TEAM, DEVICE, metadata(), catalog)
+
+    def test_reissued_leaf_same_key_is_evidence_without_relaxing_der_signing_contract(self):
+        self.assertNotEqual(self.identity_certificate, self.reissued_certificate)
+        result = self.analyze(self.reissued_certificate, self.catalog(self.reissued_certificate))
+        self.assertFalse(result["certificate_matches_existing_identity"])
+        self.assertFalse(result["usable_ad_hoc_distribution"])
+        self.assertEqual(result["compatible_isolated_debug_roots"], [])
+        self.assertTrue(result["potentially_usable_with_existing_key"])
+        certificate = result["profile_certificates"][0]
+        self.assertEqual(certificate["certificate_index"], 0)
+        self.assertEqual(certificate["matching_existing_key_roles"], ["existing_primary"])
+        self.assertTrue(certificate["currently_valid"])
+        self.assertTrue(certificate["matches_active_apple_distribution_certificate"])
+        self.assertTrue(certificate["same_team"])
+        serialized = json.dumps(result)
+        for marker in (TEAM, DEVICE, "private-subject-marker", "76435101", "76435102",
+                       base64.b64encode(self.reissued_certificate).decode()):
+            self.assertNotIn(marker, serialized)
+        self.assertTrue(set(certificate) <= {"certificate_index", "matching_existing_key_roles", "currently_valid",
+            "matches_active_apple_distribution_certificate", "same_team"})
+
+    def test_spki_match_alone_cannot_override_leaf_team_expiry_or_api_grants(self):
+        expired = self.certificate(self.private_key, 76435104, expired=True)
+        foreign_team = self.certificate(self.private_key, 76435105, team="OTHERTEAM0")
+        cases = [
+            (expired, self.catalog(expired), "currently_valid"),
+            (foreign_team, self.catalog(foreign_team), "same_team"),
+            (self.reissued_certificate, [], "matches_active_apple_distribution_certificate"),
+            (self.reissued_certificate, self.catalog(self.reissued_certificate, expirationDate="2000-01-01T00:00:00Z"), "matches_active_apple_distribution_certificate"),
+            (self.reissued_certificate, self.catalog(self.reissued_certificate, certificateType="IOS_DEVELOPMENT"), "matches_active_apple_distribution_certificate"),
+        ]
+        for certificate, catalog, false_field in cases:
+            with self.subTest(false_field=false_field, catalog_present=bool(catalog)):
+                result = self.analyze(certificate, catalog)
+                self.assertFalse(result["potentially_usable_with_existing_key"])
+                self.assertFalse(result["profile_certificates"][0][false_field])
+                self.assertFalse(result["usable_ad_hoc_distribution"])
+                self.assertEqual(result["compatible_isolated_debug_roots"], [])
+
+    def test_unrelated_private_key_cannot_be_reported_as_reusable(self):
+        result = self.analyze(self.foreign_key_certificate, self.catalog(self.foreign_key_certificate))
+        self.assertFalse(result["potentially_usable_with_existing_key"])
+        self.assertEqual(result["profile_certificates"][0]["matching_existing_key_roles"], [])
 
 
 if __name__ == "__main__":

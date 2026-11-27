@@ -292,7 +292,49 @@ def inventory_grant_matches(grant, identifier):
         (grant.endswith(".*") and identifier.startswith(grant[:-1])))
 
 
-def analyze_inventory_profile(profile, identities, team, udid, metadata=None):
+def inventory_certificate_evidence(certificates, identities, team, certificate_catalog, now):
+    """Compare public keys without exporting certificates, subjects or fingerprints."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.x509.oid import NameOID
+    def public_key(der):
+        return x509.load_der_x509_certificate(der).public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    keys = {}
+    for role, der in identities.items():
+        try:
+            keys[role] = public_key(der)
+        except (ValueError, TypeError):
+            continue
+    active_certificates = []
+    for resource in certificate_catalog or []:
+        attributes = resource.get("attributes", {}) if isinstance(resource, dict) else {}
+        expiry = inventory_time(attributes.get("expirationDate"))
+        if attributes.get("certificateType") not in ("IOS_DISTRIBUTION", "DISTRIBUTION") or expiry is None or expiry <= now:
+            continue
+        try:
+            active_certificates.append(base64.b64decode("".join(attributes.get("certificateContent", "").split()), validate=True))
+        except (ValueError, TypeError, AttributeError):
+            continue
+    result = []
+    for index, der in enumerate(certificates if isinstance(certificates, list) else []):
+        record = {"certificate_index": index, "matching_existing_key_roles": [], "currently_valid": False,
+            "matches_active_apple_distribution_certificate": False, "same_team": False}
+        try:
+            leaf = x509.load_der_x509_certificate(der)
+            spki = public_key(der)
+            record["matching_existing_key_roles"] = sorted({role if role in ("existing_primary", "existing_alternate") else "other_existing_identity"
+                for role, key in keys.items() if key == spki})
+            record["currently_valid"] = leaf.not_valid_before_utc <= now < leaf.not_valid_after_utc
+            record["same_team"] = any(attribute.value == team for attribute in leaf.subject.get_attributes_for_oid(NameOID.ORGANIZATIONAL_UNIT_NAME))
+            record["matches_active_apple_distribution_certificate"] = der in active_certificates
+        except (ValueError, TypeError):
+            pass
+        result.append(record)
+    return result
+
+
+def analyze_inventory_profile(profile, identities, team, udid, metadata=None, certificate_catalog=None):
     """Analyze authenticated profile contents without exporting identifiers or values."""
     if not isinstance(profile, dict) or not isinstance(profile.get("Entitlements"), dict):
         raise BumpError("invalid_inventory_profile")
@@ -349,6 +391,11 @@ def analyze_inventory_profile(profile, identities, team, udid, metadata=None):
                 keychain_scopes.append({"scope": "<invalid>", "kind": "invalid", "application_prefix_matches": False})
     usable = bool(profile_type == "IOS_APP_ADHOC" and state_active and current_validity and metadata_matches and
         matching_roles and device_match and team_matches and prefix_consistent and entitlements.get("get-task-allow") is False)
+    certificate_evidence = inventory_certificate_evidence(developer_certificates, identities, team, certificate_catalog, now)
+    usable_existing_key = bool(profile_type == "IOS_APP_ADHOC" and state_active and current_validity and metadata_matches and
+        device_match and team_matches and prefix_consistent and entitlements.get("get-task-allow") is False and any(
+            item["matching_existing_key_roles"] and item["currently_valid"] and item["same_team"] and
+            item["matches_active_apple_distribution_certificate"] for item in certificate_evidence))
     candidates = []
     if usable and valid_keychain_grants and grant is not None:
         candidate = ROOT_ID if grant == "*" else grant[:-2] + ".bumpdebug" if grant.endswith(".*") else None
@@ -365,16 +412,17 @@ def analyze_inventory_profile(profile, identities, team, udid, metadata=None):
         "current_validity": bool(current_validity), "team_matches_existing_identity": bool(team_matches),
         "application_prefix_consistent": bool(prefix_consistent), "profile_metadata_matches": bool(metadata_matches),
         "usable_ad_hoc_distribution": usable, "keychain_grant_scopes": keychain_scopes,
+        "profile_certificates": certificate_evidence, "potentially_usable_with_existing_key": usable_existing_key,
         "compatible_isolated_debug_roots": candidates}
 
 
-def inspect_inventory_cms(module, raw, identities, team, udid, metadata=None):
+def inspect_inventory_cms(module, raw, identities, team, udid, metadata=None, certificate_catalog=None):
     if not isinstance(raw, bytes) or not 1 <= len(raw) <= 10 * 1024 * 1024:
         return {"cms_signature_valid": False, "inspection_error": "invalid_profile_content"}
     try:
         decoded = module.run(["openssl", "cms", "-verify", "-inform", "DER", "-noverify"], raw)
         profile = plistlib.loads(decoded)
-        report = analyze_inventory_profile(profile, identities, team, udid, metadata)
+        report = analyze_inventory_profile(profile, identities, team, udid, metadata, certificate_catalog)
         report["cms_signature_valid"] = True
         return report
     except Exception as error:
@@ -417,6 +465,11 @@ def inventory_existing(module, root):
         resources = []
         inventory_errors.append({"stage": "list_existing_profiles", "reason": safe_failure(error)})
     counts["api_profile_count"] = len(resources)
+    try:
+        certificate_catalog = api.collection("/v1/certificates")
+    except Exception as error:
+        certificate_catalog = []
+        inventory_errors.append({"stage": "list_existing_certificates", "reason": safe_failure(error)})
     for index, resource in enumerate(resources):
         attributes = resource.get("attributes", {})
         profile_type = attributes.get("profileType")
@@ -435,7 +488,7 @@ def inventory_existing(module, root):
                 resource = api.request("GET", "/v1/profiles/" + resource_id(resource.get("id")))["data"]
                 attributes = resource.get("attributes", {})
             raw = module.helper.decode_base64(attributes.get("profileContent", ""))
-            record = inspect_inventory_cms(module, raw, identities, os.environ["APPLE_TEAM_ID"], device["attributes"]["udid"], attributes)
+            record = inspect_inventory_cms(module, raw, identities, os.environ["APPLE_TEAM_ID"], device["attributes"]["udid"], attributes, certificate_catalog)
         except Exception as error:
             record = {"cms_signature_valid": False, "inspection_error": safe_failure(error)}
         profiles.append({"source": "apple_api", "profile_index": index, **record})
@@ -443,7 +496,7 @@ def inventory_existing(module, root):
     if embedded_status["present"]:
         try:
             raw = module.helper.decode_base64(os.environ["BUILD_PROVISION_PROFILE_BASE64"])
-            embedded = inspect_inventory_cms(module, raw, identities, os.environ["APPLE_TEAM_ID"], device["attributes"]["udid"])
+            embedded = inspect_inventory_cms(module, raw, identities, os.environ["APPLE_TEAM_ID"], device["attributes"]["udid"], certificate_catalog=certificate_catalog)
             embedded_status["profile_type"] = embedded.get("profile_type", "UNCLASSIFIED")
             embedded_status["cms_signature_valid"] = embedded.get("cms_signature_valid", False)
             if embedded.get("profile_type") == "IOS_APP_STORE":
@@ -463,6 +516,7 @@ def inventory_existing(module, root):
         "ci_embedded_profile": embedded_status, "inventory_errors": inventory_errors,
         "validation_limits": ["CMS signatures checked; Apple CA chain and revocation not checked",
             "Candidate roots prove nine-bundle application/keychain namespace coverage only; signing behavior unchanged",
+            "Potential existing-key reuse requires a current same-team leaf exactly present in the active Apple distribution certificate catalog; namespace acceptance unchanged",
             "No raw profile, certificate subject, team prefix or registered-device identifier is exported"]}
     plaintext = module.private(root / "inventory.json", (json.dumps(report, indent=2) + "\n").encode())
     encrypted = Path("bump-output/BumpLocationDebug-profile-inventory.cms")
