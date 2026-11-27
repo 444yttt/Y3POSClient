@@ -16,6 +16,7 @@ static Class BLDDelegateClasses[2];
 static BLDLocationCallback BLDOriginalCallbacks[2];
 static NSUInteger BLDInstalledCount;
 static const void *BLDManagerKey = &BLDManagerKey;
+static const void *BLDInjectedLocationKey = &BLDInjectedLocationKey;
 
 @interface BLDManagerState : NSObject
 @property(nonatomic, assign) CFRunLoopRef deliveryRunLoop;
@@ -94,27 +95,37 @@ static CLLocation *BLDSampledLocation(void) {
     }
     CLLocationSourceInformation *source = [[CLLocationSourceInformation alloc]
         initWithSoftwareSimulationState:YES andExternalAccessoryState:NO];
-    return [[CLLocation alloc] initWithCoordinate:CLLocationCoordinate2DMake(sample.point.latitude, sample.point.longitude)
+    CLLocation *location = [[CLLocation alloc] initWithCoordinate:CLLocationCoordinate2DMake(sample.point.latitude, sample.point.longitude)
         altitude:0 horizontalAccuracy:accuracy verticalAccuracy:-1
         course:sample.course courseAccuracy:(sample.course < 0 ? -1 : 5)
         speed:sample.speed speedAccuracy:0.2 timestamp:[NSDate date] sourceInfo:source];
+    objc_setAssociatedObject(location, BLDInjectedLocationKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return location;
 }
 
 static void BLDReceivedLocations(id delegate, SEL selector, CLLocationManager *manager, NSArray<CLLocation *> *locations) {
     NSInteger index = BLDDelegateIndex(delegate);
     if (index < 0 || !BLDOriginalCallbacks[index]) return;
-    BLDManagerState *state = BLDState(manager, YES);
-    @synchronized(state) {
-        CFRunLoopRef current = CFRunLoopGetCurrent();
-        if (state.deliveryRunLoop != current) {
-            if (state.deliveryRunLoop) CFRelease(state.deliveryRunLoop);
-            state.deliveryRunLoop = (CFRunLoopRef)CFRetain(current);
-            state.loopGeneration++;
-            state.pending = NO;
-        }
-    }
     BLDController *controller = BLDShared();
-    @synchronized(controller) { controller->received++; }
+    // The provider can forward to the other hooked class on another queue.
+    // Only the manager's actual delegate establishes its delivery run loop.
+    if (manager.delegate == delegate) {
+        BLDManagerState *state = BLDState(manager, YES);
+        @synchronized(state) {
+            CFRunLoopRef current = CFRunLoopGetCurrent();
+            if (state.deliveryRunLoop != current) {
+                if (state.deliveryRunLoop) CFRelease(state.deliveryRunLoop);
+                state.deliveryRunLoop = (CFRunLoopRef)CFRetain(current);
+                state.loopGeneration++;
+                state.pending = NO;
+            }
+        }
+        @synchronized(controller) { controller->received++; }
+    }
+    if (locations.count == 1 && objc_getAssociatedObject(locations.lastObject, BLDInjectedLocationKey)) {
+        BLDOriginalCallbacks[index](delegate, selector, manager, locations);
+        return;
+    }
     CLLocation *replacement = BLDSampledLocation();
     if (replacement) {
         @synchronized(controller) { controller->injected++; }

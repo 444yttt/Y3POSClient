@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <CoreLocation/CoreLocation.h>
+#import <dispatch/dispatch.h>
 #import <objc/runtime.h>
 #import <math.h>
 #import <stdio.h>
@@ -16,6 +17,7 @@
 static NSUInteger checks;
 static const void *receivedKey = &receivedKey;
 static const void *callbackCountKey = &callbackCountKey;
+static const void *callbackMainThreadKey = &callbackMainThreadKey;
 static const void *delegateKey = &delegateKey;
 static const void *storedLocationKey = &storedLocationKey;
 static const void *startCountKey = &startCountKey;
@@ -46,6 +48,8 @@ static void receive(id receiver, SEL selector, CLLocationManager *manager,
     (void)selector;
     (void)manager;
     objc_setAssociatedObject(receiver, receivedKey, locations, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(receiver, callbackMainThreadKey, @(NSThread.isMainThread),
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     increment(receiver, callbackCountKey);
 }
 
@@ -278,6 +282,37 @@ int main(void) {
         REQUIRE(countFor(firstDelegate, callbackCountKey) == count,
                 "observed callback alone does not start periodic injection");
 
+        // The actual provider forwards a CLLocation array to another hooked
+        // delegate on a work queue. That downstream invocation must neither
+        // replace our generated fix again nor move the manager's delivery loop.
+        id forwardedDelegate = [secondClass new];
+        invokeVoid(firstManager, @selector(startUpdatingLocation));
+        count = countFor(firstDelegate, callbackCountKey);
+        dispatch_semaphore_t forwarded = dispatch_semaphore_create(0);
+        __block BOOL forwardedOnBackground = NO;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            @autoreleasepool {
+                forwardedOnBackground = !NSThread.isMainThread;
+                deliver(forwardedDelegate, firstManager, replacement);
+            }
+            dispatch_semaphore_signal(forwarded);
+        });
+        REQUIRE(dispatch_semaphore_wait(forwarded, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0,
+                "background forwarded callback completed");
+        REQUIRE(forwardedOnBackground, "forwarding fixture actually ran off the main thread");
+        NSArray *forwardedLocations = objc_getAssociatedObject(forwardedDelegate, receivedKey);
+        REQUIRE(forwardedLocations == replacement, "forwarded injected array identity is preserved");
+        REQUIRE(forwardedLocations.firstObject == replacement.firstObject,
+                "forwarded injected CLLocation identity is preserved");
+        REQUIRE(![objc_getAssociatedObject(forwardedDelegate, callbackMainThreadKey) boolValue],
+                "downstream fixture observed the background callback");
+        pump(1.3);
+        REQUIRE(countFor(firstDelegate, callbackCountKey) > count,
+                "background forwarding preserves periodic delivery to actual delegate");
+        REQUIRE([objc_getAssociatedObject(firstDelegate, callbackMainThreadKey) boolValue],
+                "periodic delivery retains the actual delegate's main run loop");
+        invokeVoid(firstManager, @selector(stopUpdatingLocation));
+
         id secondDelegate = [secondClass new];
         id secondManager = [managerClass new];
         assignDelegate(secondManager, secondDelegate);
@@ -351,7 +386,9 @@ int main(void) {
             @"covers": @[@"fail-closed installation", @"ABI rejection", @"idempotence",
                           @"disabled identity", @"route rejection", @"fixed replacement",
                           @"source information", @"current timestamp", @"unrelated delegate",
-                          @"observed run-loop requirement", @"periodic delivery", @"stop restoration"]
+                          @"observed run-loop requirement", @"forwarded array identity",
+                          @"background forwarding retains delivery loop",
+                          @"periodic delivery", @"stop restoration"]
         };
         NSData *json = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:NULL];
         REQUIRE(json != nil, "serialize safe result");
