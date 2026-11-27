@@ -85,7 +85,7 @@ jobs:
           retention-days: 30
           if-no-files-found: error
       - name: Save only the encrypted signed delivery
-        if: ${{ hashFiles('bereal-signing-input.json') != '' && hashFiles('bereal-prepare-input-only.flag') == '' }}
+        if: ${{ !contains(github.event.head_commit.message, '[bereal-access-only]') && hashFiles('bereal-signing-input.json') != '' && hashFiles('bereal-prepare-input-only.flag') == '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: BeReal493-signed-encrypted-${{ github.sha }}
