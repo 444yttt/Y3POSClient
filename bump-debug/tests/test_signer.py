@@ -200,6 +200,23 @@ class ProfileTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             SIGNER.bundle_entitlements(self.module, self.profile(), "com.unrelated.application")
 
+    def test_exact_profile_can_use_own_group_without_fabricating_shared_grant(self):
+        identifier = SIGNER.ROOT_ID + ".lpse"
+        profile = self.profile(["TESTTEAM00." + identifier])
+        profile["Entitlements"]["application-identifier"] = "TESTTEAM00." + identifier
+        entitlements, configured_group = SIGNER.bundle_entitlements(self.module, profile, identifier)
+        self.assertEqual(configured_group, "TESTTEAM00." + identifier)
+        self.assertEqual(entitlements["keychain-access-groups"], [configured_group])
+        self.assertNotIn("TESTTEAM00." + SIGNER.ROOT_ID, entitlements["keychain-access-groups"])
+
+    def test_exact_profile_wildcard_keychain_grant_can_share_root_group(self):
+        identifier = SIGNER.ROOT_ID + ".lpse"
+        profile = self.profile()
+        profile["Entitlements"]["application-identifier"] = "TESTTEAM00." + identifier
+        entitlements, configured_group = SIGNER.bundle_entitlements(self.module, profile, identifier)
+        self.assertEqual(configured_group, "TESTTEAM00." + SIGNER.ROOT_ID)
+        self.assertEqual(set(entitlements["keychain-access-groups"]), {"TESTTEAM00." + identifier, configured_group})
+
     def test_read_only_adapter_rejects_apple_write_before_dispatch(self):
         class API:
             def request(self, *args):
@@ -216,8 +233,8 @@ class IdentitySelectionTests(unittest.TestCase):
         module = SimpleNamespace()
         module.decode_identity = mock.Mock(side_effect=lambda root, need_private_key, **kwargs:
             alternate if kwargs.get("certificate_env") == "DIST_P12_BASE64" else primary)
-        module.RefreshingAppleAPI = mock.Mock(return_value=object())
-        module.signing_readiness = mock.Mock(return_value=({}, {"attributes": {"udid": "fixture-device"}}))
+        module.RefreshingAppleAPI = mock.Mock(return_value=SimpleNamespace(collection=mock.Mock(return_value=[]), request=mock.Mock()))
+        module.signing_readiness = mock.Mock(return_value=({"id": "cert-fixture"}, {"id": "device-fixture", "attributes": {"udid": "fixture-device"}}))
         module.select_existing_wildcard_profile = mock.Mock(return_value=(b"fixture-profile", {}))
         return module
 
@@ -225,11 +242,13 @@ class IdentitySelectionTests(unittest.TestCase):
         module = self.module()
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"APPLE_TEAM_ID": "TESTTEAM00"}, clear=True):
             result = SIGNER.prepare_identity(module, Path(directory), True)
-        self.assertEqual(result[0], Path("primary.p12"))
-        self.assertEqual(result[1], b"primary-cert")
-        self.assertEqual(result[2], Path("primary-key.pem"))
-        self.assertEqual(result[3], b"primary-cert")
-        self.assertEqual(result[-2:], ("P12_PASSWORD", "existing_primary"))
+        self.assertEqual(result["p12"], Path("primary.p12"))
+        self.assertEqual(result["primary_der"], b"primary-cert")
+        self.assertEqual(result["key"], Path("primary-key.pem"))
+        self.assertEqual(result["der"], b"primary-cert")
+        self.assertEqual((result["password_env"], result["identity_role"]), ("P12_PASSWORD", "existing_primary"))
+        self.assertEqual(set(result["profiles"]), {SIGNER.ROOT_ID + suffix for suffix in SIGNER.SUFFIXES})
+        self.assertEqual(result["profile_selection"], "existing_wildcard_read_only")
         module.decode_identity.assert_called_once()
         module.signing_readiness.assert_called_once()
         self.assertEqual(module.select_existing_wildcard_profile.call_args.args[1], b"primary-cert")
@@ -239,11 +258,11 @@ class IdentitySelectionTests(unittest.TestCase):
         environment = {"APPLE_TEAM_ID": "TESTTEAM00", "DIST_P12_BASE64": "fixture", "DIST_P12_PASSWORD": "fixture"}
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, environment, clear=True):
             result = SIGNER.prepare_identity(module, Path(directory), True)
-        self.assertEqual(result[0], Path("alternate.p12"))
-        self.assertEqual(result[1], b"primary-cert")
-        self.assertEqual(result[2], Path("primary-key.pem"))
-        self.assertEqual(result[3], b"alternate-cert")
-        self.assertEqual(result[-2:], ("DIST_P12_PASSWORD", "existing_alternate"))
+        self.assertEqual(result["p12"], Path("alternate.p12"))
+        self.assertEqual(result["primary_der"], b"primary-cert")
+        self.assertEqual(result["key"], Path("primary-key.pem"))
+        self.assertEqual(result["der"], b"alternate-cert")
+        self.assertEqual((result["password_env"], result["identity_role"]), ("DIST_P12_PASSWORD", "existing_alternate"))
         self.assertEqual(module.decode_identity.call_count, 2)
         self.assertEqual(module.signing_readiness.call_count, 2)
         self.assertEqual(module.select_existing_wildcard_profile.call_args.args[1], b"alternate-cert")
@@ -258,7 +277,7 @@ class IdentitySelectionTests(unittest.TestCase):
 
     def test_alternate_device_must_match_and_profile_failure_remains_exact(self):
         module = self.module()
-        module.signing_readiness.side_effect = [({}, {"attributes": {"udid": "first"}}), ({}, {"attributes": {"udid": "second"}})]
+        module.signing_readiness.side_effect = [({"id": "cert-first"}, {"id": "device-first", "attributes": {"udid": "first"}}), ({"id": "cert-second"}, {"id": "device-second", "attributes": {"udid": "second"}})]
         environment = {"APPLE_TEAM_ID": "TESTTEAM00", "DIST_P12_BASE64": "fixture", "DIST_P12_PASSWORD": "fixture"}
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, environment, clear=True):
             with self.assertRaisesRegex(SIGNER.BumpError, "registered_device_changed"):
@@ -269,7 +288,22 @@ class IdentitySelectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"APPLE_TEAM_ID": "TESTTEAM00"}, clear=True):
             with self.assertRaises(RuntimeError) as error:
                 SIGNER.prepare_identity(module, Path(directory), False)
-        self.assertEqual(SIGNER.safe_failure(error.exception), "no_compatible_existing_wildcard_profile")
+        self.assertEqual(SIGNER.safe_failure(error.exception), "missing_scoped_bundle_registration")
+
+    def test_existing_exact_profiles_used_read_only_when_wildcard_absent(self):
+        module = self.module()
+        module.select_existing_wildcard_profile.side_effect = RuntimeError("No existing wildcard Ad Hoc profile proves certificate compatibility")
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"APPLE_TEAM_ID": "TESTTEAM00"}, clear=True):
+            with mock.patch.object(SIGNER, "exact_profile", return_value=((b"profile", {}), {"created_bundle_count": 0, "created_profile_count": 0, "reused_profile_count": 1})) as exact:
+                result = SIGNER.prepare_identity(module, Path(directory), False)
+        self.assertEqual(exact.call_count, 9)
+        for call in exact.call_args_list:
+            self.assertIs(call.args[-1], False)
+            self.assertIsInstance(call.args[1], SIGNER.ReadOnlyAPI)
+            self.assertNotIsInstance(call.args[1], SIGNER.ScopedProvisioningAPI)
+        self.assertEqual(result["profile_selection"], "exact_scoped_profiles")
+        self.assertEqual(result["statistics"]["created_profile_count"], 0)
+        self.assertEqual(result["statistics"]["reused_profile_count"], 9)
 
 
 if __name__ == "__main__":

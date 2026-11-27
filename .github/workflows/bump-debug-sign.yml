@@ -6,6 +6,7 @@ on:
       - 'scripts/bump-resign.py'
       - 'bump-signing-input.json'
       - 'bump-delivery-recipient.pem'
+      - 'bump-provision-scoped.flag'
       - '.github/workflows/bump-debug-sign.yml'
   workflow_dispatch:
 permissions:
@@ -49,7 +50,9 @@ jobs:
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          if [[ -f bump-signing-input.json ]]; then
+          if [[ -f bump-provision-scoped.flag ]]; then
+            python3 scripts/bump-resign.py --prepare-profiles
+          elif [[ -f bump-signing-input.json ]]; then
             python3 scripts/bump-resign.py
           else
             python3 scripts/bump-resign.py --prepare

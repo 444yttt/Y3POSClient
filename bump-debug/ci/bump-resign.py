@@ -45,9 +45,9 @@ def safe_failure(error):
         match = re.search(r"codesign stage=([a-z_]+) reason=([a-z_]+)", message)
         if match:
             return match.group(0)
-        match = re.search(r"Apple API GET /v1/(certificates|profiles|devices)(?:/[^ ]+)? failed \(HTTP ([0-9]{3})\)", message)
+        match = re.search(r"Apple API (GET|POST) /v1/(certificates|profiles|devices|bundleIds)(?:/[^ ]+)? failed \(HTTP ([0-9]{3})\)", message)
         if match:
-            return "apple_api_get_" + match.group(1) + "_http" + match.group(2)
+            return "apple_api_" + match.group(1).lower() + "_" + match.group(2) + "_http" + match.group(3)
         known = {
             "Required existing signing assets are missing": "required_existing_assets_missing",
             "Existing Apple distribution certificate is not valid": "existing_distribution_certificate_invalid",
@@ -233,13 +233,20 @@ def remap_references(info, mappings):
 
 def bundle_entitlements(module, profile, identifier):
     """Concretize own and shared keychain scopes only under a proved grant."""
-    entitlements = module.existing_wildcard_entitlements(profile, identifier)
+    if identifier not in {ROOT_ID + suffix for suffix in SUFFIXES}:
+        raise BumpError("unapproved_bundle_scope")
+    grant = profile["Entitlements"].get("application-identifier", "")
+    if not isinstance(grant, str) or "." not in grant:
+        raise BumpError("invalid_profile_identity")
+    entitlements = (module.existing_wildcard_entitlements(profile, identifier) if "*" in grant
+                    else module.concrete_entitlements(profile, identifier))
     prefix = entitlements["application-identifier"].split(".", 1)[0]
     shared = prefix + "." + ROOT_ID
     grants = profile["Entitlements"].get("keychain-access-groups")
-    if not isinstance(grants, list) or not any(isinstance(grant, str) and
-            module.apple_identifier_grant_matches(grant, shared) for grant in grants):
-        raise BumpError("profile_has_no_scoped_shared_keychain_grant")
+    if not isinstance(grants, list) or not grants:
+        raise BumpError("profile_has_no_scoped_keychain_grant")
+    if not any(isinstance(grant, str) and module.apple_identifier_grant_matches(grant, shared) for grant in grants):
+        shared = entitlements["application-identifier"]
     groups = entitlements.get("keychain-access-groups", [])
     if shared not in groups:
         groups.append(shared)
@@ -265,26 +272,176 @@ class ReadOnlyAPI:
         return self.api.request(method, *args, **kwargs)
 
 
-def prepare_identity(module, root, need_private_key):
+def resource_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,128}", value):
+        raise BumpError("invalid_apple_resource_identifier")
+    return value
+
+
+def registration_name(identifier):
+    if identifier not in {ROOT_ID + suffix for suffix in SUFFIXES}:
+        raise BumpError("unapproved_bundle_scope")
+    return "BumpLocationDebug " + (identifier[len(ROOT_ID):].lstrip(".") or "app")
+
+
+def profile_name(identifier):
+    return registration_name(identifier).replace(" ", "-AdHoc-", 1)
+
+
+def validate_registration(resource, identifier):
+    if identifier not in {ROOT_ID + suffix for suffix in SUFFIXES}:
+        raise BumpError("unapproved_bundle_scope")
+    if (not isinstance(resource, dict) or resource.get("type") != "bundleIds" or
+            resource.get("attributes", {}).get("identifier") != identifier or
+            resource.get("attributes", {}).get("platform") not in ("IOS", "UNIVERSAL")):
+        raise BumpError("unexpected_bundle_registration")
+    return resource_id(resource.get("id"))
+
+
+class ScopedProvisioningAPI(ReadOnlyAPI):
+    """Only exact Bump app registrations/profiles may be created in explicit mode."""
+    def __init__(self, api, certificate_id, device_id):
+        super().__init__(api)
+        self.certificate_id, self.device_id = resource_id(certificate_id), resource_id(device_id)
+        self.registrations = {}
+        self.posted_bundles, self.posted_profiles = set(), set()
+
+    def accept_registration(self, resource, identifier):
+        bundle_id = validate_registration(resource, identifier)
+        if bundle_id in self.registrations and self.registrations[bundle_id] != identifier:
+            raise BumpError("ambiguous_bundle_registration")
+        if any(existing_id != bundle_id and existing_identifier == identifier for existing_id, existing_identifier in self.registrations.items()):
+            raise BumpError("ambiguous_bundle_registration")
+        self.registrations[bundle_id] = identifier
+
+    def request(self, method, path, body=None):
+        if method == "GET":
+            return self.api.request(method, path, body)
+        if method != "POST" or path not in ("/v1/bundleIds", "/v1/profiles"):
+            raise BumpError("apple_write_outside_bump_scope")
+        if not isinstance(body, dict) or set(body) != {"data"} or not isinstance(body["data"], dict):
+            raise BumpError("invalid_scoped_apple_write")
+        data = body["data"]
+        if path == "/v1/bundleIds":
+            if set(data) != {"type", "attributes"} or data["type"] != "bundleIds" or not isinstance(data["attributes"], dict):
+                raise BumpError("invalid_scoped_bundle_write")
+            attributes = data["attributes"]
+            identifier = attributes.get("identifier")
+            if attributes != {"identifier": identifier, "name": registration_name(identifier), "platform": "IOS"}:
+                raise BumpError("invalid_scoped_bundle_write")
+            if identifier in self.posted_bundles or identifier in self.registrations.values():
+                raise BumpError("duplicate_scoped_bundle_write")
+            self.posted_bundles.add(identifier)
+        else:
+            if set(data) != {"type", "attributes", "relationships"} or data["type"] != "profiles":
+                raise BumpError("invalid_scoped_profile_write")
+            relationships = data["relationships"]
+            if not isinstance(relationships, dict) or set(relationships) != {"bundleId", "certificates", "devices"}:
+                raise BumpError("invalid_scoped_profile_relationships")
+            bundle_data = relationships.get("bundleId", {}).get("data", {})
+            if not isinstance(bundle_data, dict) or set(bundle_data) != {"type", "id"} or bundle_data["type"] != "bundleIds":
+                raise BumpError("invalid_scoped_profile_relationships")
+            bundle_id = bundle_data["id"]
+            identifier = self.registrations.get(bundle_id)
+            if identifier is None:
+                raise BumpError("unvalidated_profile_bundle_registration")
+            expected_relationships = {"bundleId": {"data": {"type": "bundleIds", "id": bundle_id}},
+                "certificates": {"data": [{"type": "certificates", "id": self.certificate_id}]},
+                "devices": {"data": [{"type": "devices", "id": self.device_id}]}}
+            if (relationships != expected_relationships or
+                    data["attributes"] != {"name": profile_name(identifier), "profileType": "IOS_APP_ADHOC"}):
+                raise BumpError("invalid_scoped_profile_write")
+            if bundle_id in self.posted_profiles:
+                raise BumpError("duplicate_scoped_profile_write")
+            self.posted_profiles.add(bundle_id)
+        return self.api.request(method, path, body)
+
+
+def exact_profile(module, api, certificate, der, team, identifier, device, create=False):
+    if identifier not in {ROOT_ID + suffix for suffix in SUFFIXES}:
+        raise BumpError("unapproved_bundle_scope")
+    if create and not isinstance(api, ScopedProvisioningAPI):
+        raise BumpError("explicit_scoped_provisioning_required")
+    registrations = api.collection("/v1/bundleIds", {"filter[identifier]": identifier})
+    matches = [item for item in registrations if item.get("attributes", {}).get("identifier") == identifier]
+    if len(matches) > 1:
+        raise BumpError("ambiguous_bundle_registration")
+    created_bundle = not matches
+    if not matches:
+        if not create:
+            raise BumpError("missing_scoped_bundle_registration")
+        bundle = api.request("POST", "/v1/bundleIds", {"data": {"type": "bundleIds", "attributes": {
+            "name": registration_name(identifier), "identifier": identifier, "platform": "IOS"}}})["data"]
+    else:
+        bundle = matches[0]
+    bundle_id = validate_registration(bundle, identifier)
+    if isinstance(api, ScopedProvisioningAPI):
+        api.accept_registration(bundle, identifier)
+    candidates = api.collection("/v1/bundleIds/" + bundle_id + "/profiles", {
+        "fields[profiles]": "name,uuid,profileType,profileState,profileContent,expirationDate"})
+    candidates = [item for item in candidates if item.get("attributes", {}).get("profileType") == "IOS_APP_ADHOC" and item.get("attributes", {}).get("profileState") == "ACTIVE"]
+    candidates.sort(key=lambda item: item.get("attributes", {}).get("expirationDate", ""), reverse=True)
+    for candidate in candidates:
+        if not candidate["attributes"].get("profileContent"):
+            candidate = api.request("GET", "/v1/profiles/" + resource_id(candidate.get("id")))["data"]
+        try:
+            raw, profile = module.validate_profile(candidate, der, team, identifier, device["attributes"]["udid"])
+            return (raw, profile), {"created_bundle_count": int(created_bundle), "created_profile_count": 0, "reused_profile_count": 1}
+        except (RuntimeError, KeyError, ValueError, TypeError):
+            continue
+    if not create:
+        raise BumpError("no_compatible_existing_exact_profile")
+    created = api.request("POST", "/v1/profiles", {"data": {"type": "profiles", "attributes": {
+        "name": profile_name(identifier), "profileType": "IOS_APP_ADHOC"}, "relationships": {
+        "bundleId": {"data": {"type": "bundleIds", "id": bundle_id}},
+        "certificates": {"data": [{"type": "certificates", "id": certificate["id"]}]},
+        "devices": {"data": [{"type": "devices", "id": device["id"]}]}}}})["data"]
+    if not created.get("attributes", {}).get("profileContent"):
+        created = api.request("GET", "/v1/profiles/" + resource_id(created.get("id")))["data"]
+    raw, profile = module.validate_profile(created, der, team, identifier, device["attributes"]["udid"])
+    return (raw, profile), {"created_bundle_count": int(created_bundle), "created_profile_count": 1, "reused_profile_count": 0}
+
+
+def prepare_identity(module, root, need_private_key, create_profiles=False):
     alternate_certificate = bool(os.environ.get("DIST_P12_BASE64"))
     alternate_password = bool(os.environ.get("DIST_P12_PASSWORD"))
     if alternate_certificate != alternate_password:
         raise BumpError("incomplete_alternate_signing_assets")
     p12, primary_der, key, asc = module.decode_identity(root, need_private_key=need_private_key)
-    api = ReadOnlyAPI(module.RefreshingAppleAPI(asc))
-    _, device = module.signing_readiness(api, primary_der)
+    underlying_api = module.RefreshingAppleAPI(asc)
+    api = ReadOnlyAPI(underlying_api)
+    certificate, device = module.signing_readiness(api, primary_der)
     der, password_env, identity_role = primary_der, "P12_PASSWORD", "existing_primary"
     if alternate_certificate:
         alternate = root / "alternate"
         alternate.mkdir(mode=0o700)
         p12, der, _, _ = module.decode_identity(alternate, need_private_key=False,
             certificate_env="DIST_P12_BASE64", password_env="DIST_P12_PASSWORD")
-        _, alternate_device = module.signing_readiness(api, der)
+        certificate, alternate_device = module.signing_readiness(api, der)
         if alternate_device["attributes"]["udid"] != device["attributes"]["udid"]:
             raise BumpError("registered_device_changed")
         password_env, identity_role = "DIST_P12_PASSWORD", "existing_alternate"
-    raw, profile = module.select_existing_wildcard_profile(api, der, os.environ["APPLE_TEAM_ID"], device)
-    return p12, primary_der, key, der, raw, profile, password_env, identity_role
+    statistics = {"created_bundle_count": 0, "created_profile_count": 0, "reused_profile_count": 0}
+    try:
+        raw, profile = module.select_existing_wildcard_profile(api, der, os.environ["APPLE_TEAM_ID"], device)
+        profiles = {ROOT_ID + suffix: (raw, profile) for suffix in SUFFIXES}
+        selection = "existing_wildcard_read_only"
+        statistics["reused_profile_count"] = 1
+    except RuntimeError as error:
+        if not str(error).startswith("No existing wildcard Ad Hoc profile proves"):
+            raise
+        if create_profiles:
+            api = ScopedProvisioningAPI(underlying_api, certificate["id"], device["id"])
+        profiles = {}
+        for suffix in SUFFIXES:
+            identifier = ROOT_ID + suffix
+            pair, changes = exact_profile(module, api, certificate, der, os.environ["APPLE_TEAM_ID"], identifier, device, create_profiles)
+            profiles[identifier] = pair
+            for name, value in changes.items():
+                statistics[name] += value
+        selection = "exact_scoped_profiles"
+    return {"p12": p12, "primary_der": primary_der, "key": key, "der": der, "profiles": profiles,
+        "password_env": password_env, "identity_role": identity_role, "profile_selection": selection, "statistics": statistics}
 
 
 def build_package(module, root, original):
@@ -305,14 +462,16 @@ def build_package(module, root, original):
     return payload, receipt
 
 
-def sign_package(module, root, payload, p12, der, raw, profile, original_keys, package_receipt, password_env, identity_role):
+def sign_package(module, root, payload, identity, original_keys, package_receipt):
     app = payload / "Payload/Location.app"
     bundles = validate_bundles(app)
     mappings = {info["CFBundleIdentifier"]: identifier for _, info, identifier in bundles}
-    targets, removed = [], {}
+    targets, removed, keychain_groups = [], {}, {}
     for index, (bundle, info, identifier) in enumerate(bundles):
         old = info["CFBundleIdentifier"]
+        raw, profile = identity["profiles"][identifier]
         entitlements, shared_keychain = bundle_entitlements(module, profile, identifier)
+        keychain_groups[identifier] = shared_keychain
         removed[identifier] = sorted(original_keys[old] - entitlements.keys())
         if not isinstance(info.get("KEYCHAIN_SHARED_GROUP"), str) or not re.fullmatch(r"[A-Z0-9]{10}\.co\.amo\.shared-group", info["KEYCHAIN_SHARED_GROUP"]):
             raise BumpError("unexpected_shared_keychain_configuration")
@@ -323,9 +482,10 @@ def sign_package(module, root, payload, p12, der, raw, profile, original_keys, p
         module.private(bundle / "embedded.mobileprovision", raw)
         entitlement_path = module.private(root / f"entitlements-{index}.plist", plistlib.dumps(entitlements))
         targets.append((bundle, info, identifier, entitlement_path))
+    der = identity["der"]
     fingerprint = hashlib.sha1(der).hexdigest().upper()
     keychain = root / "signing.keychain-db"
-    with module.signing_keychain_scope(keychain, secrets.token_urlsafe(32), p12, os.environ[password_env], fingerprint):
+    with module.signing_keychain_scope(keychain, secrets.token_urlsafe(32), identity["p12"], os.environ[identity["password_env"]], fingerprint):
         def sign(path, entitlements=None, stage="sign_macho"):
             args = ["/usr/bin/codesign", "--force", "--sign", fingerprint, "--keychain", str(keychain), "--timestamp=none", "--generate-entitlement-der"]
             if entitlements:
@@ -365,13 +525,14 @@ def sign_package(module, root, payload, p12, der, raw, profile, original_keys, p
         "distribution": "IOS_APP_ADHOC", "provisioned_bundle_count": len(targets),
         "registered_device_count": 1, "signed_macho_count": macho_count,
         "certificate_sha256": hashlib.sha256(der).hexdigest(),
-        "profile_selection": "existing_wildcard_read_only", "apple_resources_created_or_modified": False,
-        "signing_identity_role": identity_role,
+        "profile_selection": identity["profile_selection"], "apple_resources_created_or_modified": False,
+        "signing_identity_role": identity["identity_role"],
         "signature_verification": "codesign deep strict passed; nine bundles matched exact concrete entitlements and approved certificate",
         "original_entitlement_keys_not_granted": removed, "package_receipt": package_receipt,
         "device_installation": "not tested", "device_launch": "not tested", "scratch_behavior": "not tested",
         "location_injection": "implemented; software-simulated CLLocation; real-device execution not tested",
-        "keychain_configuration": "KEYCHAIN_SHARED_GROUP mapped to verified profile-granted common app-owned keychain group",
+        "keychain_configuration": "KEYCHAIN_SHARED_GROUP mapped only to profile-granted app-owned keychain groups",
+        "common_keychain_group_across_extensions": len(set(keychain_groups.values())) == 1,
         "extensions_and_shared_groups": "retained and signed; original App Group unavailable; main uses private sandbox fallback; cross-extension App Group sharing unverified"}
     receipt = module.private(root / "verification.json", (json.dumps(verification, indent=2) + "\n").encode())
     delivery = root / "delivery.zip"
@@ -387,7 +548,9 @@ def sign_package(module, root, payload, p12, der, raw, profile, original_keys, p
 def main(argv=None):
     global STAGE
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--prepare", action="store_true", help="Read-only signing readiness and public encryption key")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--prepare", action="store_true", help="Read-only signing readiness and public encryption key")
+    modes.add_argument("--prepare-profiles", action="store_true", help="Create/reuse only the nine scoped Bump registrations and Ad Hoc profiles")
     options = parser.parse_args(argv)
     if os.environ.get("GITHUB_REPOSITORY") != "444yttt/Y3POSClient" or os.environ.get("GITHUB_REF") != "refs/heads/main":
         raise BumpError("authorized_ci_scope_required")
@@ -400,28 +563,32 @@ def main(argv=None):
     with tempfile.TemporaryDirectory(prefix="bump-signing-", dir=os.environ["RUNNER_TEMP"]) as directory:
         root = Path(directory)
         STAGE = "identity_and_existing_profiles"
-        p12, primary_der, key, der, raw, profile, password_env, identity_role = prepare_identity(module, root, not options.prepare)
+        preparing = options.prepare or options.prepare_profiles
+        identity = prepare_identity(module, root, not preparing, create_profiles=options.prepare_profiles)
         for suffix in SUFFIXES:
-            bundle_entitlements(module, profile, ROOT_ID + suffix)
-        if options.prepare:
+            identifier = ROOT_ID + suffix
+            bundle_entitlements(module, identity["profiles"][identifier][1], identifier)
+        if preparing:
             output = Path("bump-public")
             output.mkdir(exist_ok=True)
-            public_key = module.run(["openssl", "x509", "-inform", "DER", "-pubkey", "-noout"], primary_der)
+            public_key = module.run(["openssl", "x509", "-inform", "DER", "-pubkey", "-noout"], identity["primary_der"])
             (output / "signing-public-key.pem").write_bytes(public_key)
-            readiness = {"input_certificate_sha256": hashlib.sha256(primary_der).hexdigest(),
-                "signing_certificate_sha256": hashlib.sha256(der).hexdigest(),
-                "existing_wildcard_bundle_coverage": len(SUFFIXES), "registered_device_count": 1,
-                "signing_identity_role": identity_role,
-                "source_commit": os.environ["GITHUB_SHA"], "apple_resources_created_or_modified": False,
+            changes = identity["statistics"]
+            readiness = {"input_certificate_sha256": hashlib.sha256(identity["primary_der"]).hexdigest(),
+                "signing_certificate_sha256": hashlib.sha256(identity["der"]).hexdigest(),
+                "validated_bundle_coverage": len(SUFFIXES), "registered_device_count": 1,
+                "signing_identity_role": identity["identity_role"], "profile_selection": identity["profile_selection"],
+                "source_commit": os.environ["GITHUB_SHA"], "apple_resources_created_or_modified": bool(changes["created_bundle_count"] or changes["created_profile_count"]),
+                **changes,
                 "signed_ipa_created": False}
             (output / "readiness.json").write_text(json.dumps(readiness, indent=2) + "\n")
-            print("Bump signing readiness passed for nine bundles; published public key only. No Apple writes or signing.")
+            print("Bump signing readiness passed for nine bundles; published public key only. Created registrations: " + str(changes["created_bundle_count"]) + "; created profiles: " + str(changes["created_profile_count"]) + ". No signing performed.")
             return
         STAGE = "authenticated_input"
         envelope_path = Path("bump-signing-input.json")
         if envelope_path.stat().st_size > 100000:
             raise BumpError("encrypted_input_too_large")
-        payload = decrypt_envelope(json.loads(envelope_path.read_text()), key.read_bytes())
+        payload = decrypt_envelope(json.loads(envelope_path.read_text()), identity["key"].read_bytes())
         # A temporary source URL is a bearer credential: mask before any use.
         print("::add-mask::" + payload["url"], flush=True)
         original = root / "original.ipa"
@@ -432,7 +599,7 @@ def main(argv=None):
         STAGE = "native_build_and_packaging"
         payload_root, package_receipt = build_package(module, root, original)
         STAGE = "signing_and_verification"
-        verification = sign_package(module, root, payload_root, p12, der, raw, profile, original_keys, package_receipt, password_env, identity_role)
+        verification = sign_package(module, root, payload_root, identity, original_keys, package_receipt)
         print("Bump signed IPA verified and recipient-encrypted. SHA256: " + verification["sha256"])
         print("Device installation, launch and scratch behavior were not tested. No Apple resources were changed.")
 
