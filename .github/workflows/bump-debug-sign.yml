@@ -6,7 +6,7 @@ on:
       - 'scripts/bump-resign.py'
       - 'bump-signing-input.json'
       - 'bump-delivery-recipient.pem'
-      - 'bump-provision-scoped.flag'
+      - 'bump-inventory-existing.flag'
       - '.github/workflows/bump-debug-sign.yml'
   workflow_dispatch:
 permissions:
@@ -31,7 +31,9 @@ jobs:
       - name: Install authenticated input dependency
         run: python3 -m pip install --disable-pip-version-check cryptography==50.0.0
       - name: Verify signer contracts
-        run: python3 -m unittest discover -s bump-debug/tests -p test_signer.py -v
+        run: |
+          python3 -m unittest discover -s bump-debug/tests -p test_signer.py -v
+          python3 -m unittest discover -s bump-debug/tests -p test_inventory.py -v
       - name: Verify final native source before signing
         if: ${{ hashFiles('bump-signing-input.json') != '' }}
         working-directory: bump-debug
@@ -44,21 +46,22 @@ jobs:
           P12_PASSWORD: ${{ secrets.P12_PASSWORD || secrets.DIST_P12_PASSWORD }}
           DIST_P12_BASE64: ${{ secrets.DIST_P12_BASE64 }}
           DIST_P12_PASSWORD: ${{ secrets.DIST_P12_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          if [[ -f bump-provision-scoped.flag ]]; then
-            python3 scripts/bump-resign.py --prepare-profiles
+          if [[ -f bump-inventory-existing.flag ]]; then
+            python3 scripts/bump-resign.py --inventory-existing
           elif [[ -f bump-signing-input.json ]]; then
             python3 scripts/bump-resign.py
           else
             python3 scripts/bump-resign.py --prepare
           fi
       - name: Save only public input encryption key and readiness
-        if: ${{ hashFiles('bump-public/readiness.json') != '' }}
+        if: ${{ hashFiles('bump-public/*') != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: BumpLocationDebug-signing-readiness-${{ github.sha }}
@@ -71,5 +74,13 @@ jobs:
         with:
           name: BumpLocationDebug-signed-encrypted-${{ github.sha }}
           path: bump-output/BumpLocationDebug-signed.cms
+          retention-days: 7
+          if-no-files-found: error
+      - name: Save encrypted existing-profile inventory
+        if: ${{ hashFiles('bump-output/BumpLocationDebug-profile-inventory.cms') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: BumpLocationDebug-profile-inventory-${{ github.sha }}
+          path: bump-output/BumpLocationDebug-profile-inventory.cms
           retention-days: 7
           if-no-files-found: error

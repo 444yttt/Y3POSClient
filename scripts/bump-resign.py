@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 import hashlib
 import importlib.util
 import json
@@ -17,6 +18,7 @@ import struct
 import sys
 import tempfile
 import urllib.parse
+import uuid
 import zipfile
 
 
@@ -26,7 +28,7 @@ ORIGINAL_ID = "co.amo.ios.location"
 SUFFIXES = ("", ".lpse", ".friend-widget", ".nce", ".friend-intent",
             ".on-my-way-live-activity", ".nse", ".imessage-stickers-extension", ".share")
 AAD = b"BumpLocationDebugInputV1"
-SIGNER_SHA256 = "8dee65652b3b456d2e5569bd1f3f66569e8ba436234351bcbfedb7f93d65cf81"
+SIGNER_SHA256 = "38ca0dcdc3bb2586f3e105d453036890fc6445db209e628ddd40300aeadf9104"
 PROFILE_HELPER_SHA256 = "628459c1f26615a8defa2d671e38630cdfeec409ddf6cac13f417e5e652a1697"
 MACHO_MAGICS = frozenset((b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe",
     b"\xfe\xed\xfa\xce", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"))
@@ -270,6 +272,207 @@ class ReadOnlyAPI:
         if method != "GET":
             raise BumpError("apple_write_forbidden")
         return self.api.request(method, *args, **kwargs)
+
+
+def inventory_time(value):
+    try:
+        if isinstance(value, datetime.datetime):
+            result = value
+        elif isinstance(value, str):
+            result = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        else:
+            return None
+        return result.replace(tzinfo=datetime.timezone.utc) if result.tzinfo is None else result.astimezone(datetime.timezone.utc)
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def inventory_grant_matches(grant, identifier):
+    return isinstance(grant, str) and (grant == "*" or grant == identifier or
+        (grant.endswith(".*") and identifier.startswith(grant[:-1])))
+
+
+def analyze_inventory_profile(profile, identities, team, udid, metadata=None):
+    """Analyze authenticated profile contents without exporting identifiers or values."""
+    if not isinstance(profile, dict) or not isinstance(profile.get("Entitlements"), dict):
+        raise BumpError("invalid_inventory_profile")
+    entitlements = profile["Entitlements"]
+    application_id = entitlements.get("application-identifier")
+    match = re.fullmatch(r"([A-Z0-9]{10})\.(\*|[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*(?:\.\*)?)", application_id) if isinstance(application_id, str) else None
+    prefix, grant = match.groups() if match else (None, None)
+    prefixes, teams = profile.get("ApplicationIdentifierPrefix"), profile.get("TeamIdentifier")
+    prefix_consistent = prefix is not None and isinstance(prefixes, list) and prefix in prefixes
+    team_matches = isinstance(teams, list) and team in teams and entitlements.get("com.apple.developer.team-identifier") == team
+    developer_certificates = profile.get("DeveloperCertificates", [])
+    roles = [role for role, certificate in identities.items() if isinstance(developer_certificates, list) and certificate in developer_certificates]
+    matching_roles = sorted({role if role in ("existing_primary", "existing_alternate") else "other_existing_identity" for role in roles})
+    devices = profile.get("ProvisionedDevices")
+    device_match = isinstance(devices, list) and devices == [udid] and not profile.get("ProvisionsAllDevices")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    expiration = inventory_time(profile.get("ExpirationDate"))
+    creation = inventory_time(profile.get("CreationDate"))
+    current_validity = expiration is not None and expiration > now and ("CreationDate" not in profile or (creation is not None and creation <= now))
+    profile_type = (metadata or {}).get("profileType")
+    if not isinstance(profile_type, str):
+        profile_type = ("IOS_APP_DEVELOPMENT" if entitlements.get("get-task-allow") is True else
+            "IOS_APP_INHOUSE" if profile.get("ProvisionsAllDevices") else
+            "IOS_APP_ADHOC" if isinstance(devices, list) and devices else
+            "IOS_APP_STORE" if entitlements.get("get-task-allow") is False and devices is None else "UNCLASSIFIED")
+    metadata_matches = True
+    try:
+        profile_uuid = str(uuid.UUID(profile.get("UUID", "")))
+    except (ValueError, TypeError, AttributeError):
+        profile_uuid = None
+        metadata_matches = False
+    if metadata is not None:
+        metadata_expiry = inventory_time(metadata.get("expirationDate"))
+        current_validity = bool(current_validity and metadata_expiry is not None and metadata_expiry > now)
+        try:
+            metadata_matches = bool(profile_uuid and str(uuid.UUID(metadata.get("uuid", ""))) == profile_uuid)
+        except (ValueError, TypeError, AttributeError):
+            metadata_matches = False
+    state_active = metadata is None or metadata.get("profileState") == "ACTIVE"
+    keychain_scopes = []
+    keychain_grants = entitlements.get("keychain-access-groups")
+    valid_keychain_grants = isinstance(keychain_grants, list) and bool(keychain_grants)
+    if isinstance(keychain_grants, list):
+        for value in keychain_grants:
+            if value == "com.apple.token":
+                keychain_scopes.append({"scope": "com.apple.token", "kind": "system", "application_prefix_matches": False})
+                continue
+            keychain_match = re.fullmatch(r"([A-Z0-9]{10})\.(\*|[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*(?:\.\*)?)", value) if isinstance(value, str) else None
+            if keychain_match:
+                grant_prefix, keychain_scope = keychain_match.groups()
+                keychain_scopes.append({"scope": keychain_scope, "kind": "application", "application_prefix_matches": prefix is not None and grant_prefix == prefix})
+            else:
+                valid_keychain_grants = False
+                keychain_scopes.append({"scope": "<invalid>", "kind": "invalid", "application_prefix_matches": False})
+    usable = bool(profile_type == "IOS_APP_ADHOC" and state_active and current_validity and metadata_matches and
+        matching_roles and device_match and team_matches and prefix_consistent and entitlements.get("get-task-allow") is False)
+    candidates = []
+    if usable and valid_keychain_grants and grant is not None:
+        candidate = ROOT_ID if grant == "*" else grant[:-2] + ".bumpdebug" if grant.endswith(".*") else None
+        if candidate and all(inventory_grant_matches(grant, candidate + suffix) and
+                any(inventory_grant_matches(keychain_grant, prefix + "." + candidate + suffix) for keychain_grant in keychain_grants)
+                for suffix in SUFFIXES):
+            candidates.append(candidate)
+    return {"profile_type": profile_type if profile_type in {"IOS_APP_ADHOC", "IOS_APP_STORE", "IOS_APP_STORE_CONNECT", "IOS_APP_DEVELOPMENT", "IOS_APP_INHOUSE"} else "OTHER",
+        "application_identifier_grant": grant,
+        "application_identifier_kind": "wildcard" if grant and "*" in grant else "explicit" if grant else "invalid",
+        "certificate_matches_existing_identity": bool(matching_roles), "matching_identity_roles": matching_roles,
+        "registered_device_set_matches": bool(device_match), "registered_device_included": isinstance(devices, list) and udid in devices,
+        "provisioned_device_count": len(devices) if isinstance(devices, list) else 0,
+        "current_validity": bool(current_validity), "team_matches_existing_identity": bool(team_matches),
+        "application_prefix_consistent": bool(prefix_consistent), "profile_metadata_matches": bool(metadata_matches),
+        "usable_ad_hoc_distribution": usable, "keychain_grant_scopes": keychain_scopes,
+        "compatible_isolated_debug_roots": candidates}
+
+
+def inspect_inventory_cms(module, raw, identities, team, udid, metadata=None):
+    if not isinstance(raw, bytes) or not 1 <= len(raw) <= 10 * 1024 * 1024:
+        return {"cms_signature_valid": False, "inspection_error": "invalid_profile_content"}
+    try:
+        decoded = module.run(["openssl", "cms", "-verify", "-inform", "DER", "-noverify"], raw)
+        profile = plistlib.loads(decoded)
+        report = analyze_inventory_profile(profile, identities, team, udid, metadata)
+        report["cms_signature_valid"] = True
+        return report
+    except Exception as error:
+        return {"cms_signature_valid": False, "inspection_error": safe_failure(error)}
+
+
+def inventory_existing(module, root):
+    """Read all existing profile scopes; encrypt details, publish only safe counts."""
+    _, primary_der, _, asc = module.decode_identity(root, need_private_key=False)
+    api = ReadOnlyAPI(module.RefreshingAppleAPI(asc))
+    _, device = module.signing_readiness(api, primary_der)
+    identities = {"existing_primary": primary_der}
+    alternate_status = "not_configured"
+    alternate_certificate, alternate_password = bool(os.environ.get("DIST_P12_BASE64")), bool(os.environ.get("DIST_P12_PASSWORD"))
+    if alternate_certificate != alternate_password:
+        alternate_status = "incomplete_configuration"
+    elif alternate_certificate:
+        alternate = root / "inventory-alternate"
+        alternate.mkdir(mode=0o700)
+        try:
+            _, alternate_der, _, _ = module.decode_identity(alternate, need_private_key=False,
+                certificate_env="DIST_P12_BASE64", password_env="DIST_P12_PASSWORD")
+            _, alternate_device = module.signing_readiness(api, alternate_der)
+            if alternate_device["attributes"]["udid"] != device["attributes"]["udid"]:
+                raise BumpError("registered_device_changed")
+            identities["existing_alternate"] = alternate_der
+            alternate_status = "validated"
+        except Exception as error:
+            alternate_status = safe_failure(error)
+    output = Path("bump-public")
+    output.mkdir(exist_ok=True)
+    public_key = module.run(["openssl", "x509", "-inform", "DER", "-pubkey", "-noout"], primary_der)
+    (output / "signing-public-key.pem").write_bytes(public_key)
+    profiles, inventory_errors = [], []
+    counts = {"api_profile_count": 0, "active_ios_adhoc_count": 0, "appstore_profile_count": 0,
+        "other_profile_count": 0, "inactive_ios_adhoc_count": 0}
+    try:
+        resources = api.collection("/v1/profiles", {"fields[profiles]": "uuid,profileType,profileState,profileContent,expirationDate"})
+    except Exception as error:
+        resources = []
+        inventory_errors.append({"stage": "list_existing_profiles", "reason": safe_failure(error)})
+    counts["api_profile_count"] = len(resources)
+    for index, resource in enumerate(resources):
+        attributes = resource.get("attributes", {})
+        profile_type = attributes.get("profileType")
+        if profile_type in ("IOS_APP_STORE", "IOS_APP_STORE_CONNECT", "MAC_APP_STORE", "TVOS_APP_STORE", "MAC_CATALYST_APP_STORE"):
+            counts["appstore_profile_count"] += 1
+            continue
+        if profile_type != "IOS_APP_ADHOC":
+            counts["other_profile_count"] += 1
+            continue
+        if attributes.get("profileState") != "ACTIVE":
+            counts["inactive_ios_adhoc_count"] += 1
+            continue
+        counts["active_ios_adhoc_count"] += 1
+        try:
+            if not attributes.get("profileContent"):
+                resource = api.request("GET", "/v1/profiles/" + resource_id(resource.get("id")))["data"]
+                attributes = resource.get("attributes", {})
+            raw = module.helper.decode_base64(attributes.get("profileContent", ""))
+            record = inspect_inventory_cms(module, raw, identities, os.environ["APPLE_TEAM_ID"], device["attributes"]["udid"], attributes)
+        except Exception as error:
+            record = {"cms_signature_valid": False, "inspection_error": safe_failure(error)}
+        profiles.append({"source": "apple_api", "profile_index": index, **record})
+    embedded_status = {"present": bool(os.environ.get("BUILD_PROVISION_PROFILE_BASE64"))}
+    if embedded_status["present"]:
+        try:
+            raw = module.helper.decode_base64(os.environ["BUILD_PROVISION_PROFILE_BASE64"])
+            embedded = inspect_inventory_cms(module, raw, identities, os.environ["APPLE_TEAM_ID"], device["attributes"]["udid"])
+            embedded_status["profile_type"] = embedded.get("profile_type", "UNCLASSIFIED")
+            embedded_status["cms_signature_valid"] = embedded.get("cms_signature_valid", False)
+            if embedded.get("profile_type") == "IOS_APP_STORE":
+                embedded_status["classification_only"] = True
+            else:
+                profiles.append({"source": "ci_embedded_profile", **embedded})
+        except Exception as error:
+            embedded_status["inspection_error"] = safe_failure(error)
+    error_count = len(inventory_errors) + sum("inspection_error" in record for record in profiles) + int("inspection_error" in embedded_status)
+    summary = {"mode": "read_only_existing_profile_inventory", **counts,
+        "existing_identity_count": len(identities), "embedded_profile_present": embedded_status["present"],
+        "compatible_isolated_namespace_profile_count": sum(bool(record.get("compatible_isolated_debug_roots")) for record in profiles),
+        "inspection_error_count": error_count, "inventory_complete": error_count == 0,
+        "apple_resources_created_or_modified": False, "signed_ipa_created": False,
+        "source_commit": os.environ["GITHUB_SHA"]}
+    report = {"summary": summary, "alternate_identity_status": alternate_status, "profiles": profiles,
+        "ci_embedded_profile": embedded_status, "inventory_errors": inventory_errors,
+        "validation_limits": ["CMS signatures checked; Apple CA chain and revocation not checked",
+            "Candidate roots prove nine-bundle application/keychain namespace coverage only; signing behavior unchanged",
+            "No raw profile, certificate subject, team prefix or registered-device identifier is exported"]}
+    plaintext = module.private(root / "inventory.json", (json.dumps(report, indent=2) + "\n").encode())
+    encrypted = Path("bump-output/BumpLocationDebug-profile-inventory.cms")
+    encrypted.parent.mkdir(exist_ok=True)
+    module.run(["openssl", "cms", "-encrypt", "-aes-256-gcm", "-binary", "-in", str(plaintext), "-outform", "DER", "-out", str(encrypted), "bump-delivery-recipient.pem"])
+    (output / "inventory-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    print("Read-only profile inventory encrypted. Active iOS Ad Hoc profiles: " + str(counts["active_ios_adhoc_count"]) +
+        "; candidate namespace profiles: " + str(summary["compatible_isolated_namespace_profile_count"]) +
+        "; inspection errors: " + str(error_count) + ". No Apple resources changed.")
+    return report
 
 
 def resource_id(value):
@@ -551,6 +754,7 @@ def main(argv=None):
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--prepare", action="store_true", help="Read-only signing readiness and public encryption key")
     modes.add_argument("--prepare-profiles", action="store_true", help="Create/reuse only the nine scoped Bump registrations and Ad Hoc profiles")
+    modes.add_argument("--inventory-existing", action="store_true", help="Read-only encrypted inventory of existing profiles, independent of the Bump namespace")
     options = parser.parse_args(argv)
     if os.environ.get("GITHUB_REPOSITORY") != "444yttt/Y3POSClient" or os.environ.get("GITHUB_REF") != "refs/heads/main":
         raise BumpError("authorized_ci_scope_required")
@@ -562,6 +766,10 @@ def main(argv=None):
     module.helper = module.load_helper()
     with tempfile.TemporaryDirectory(prefix="bump-signing-", dir=os.environ["RUNNER_TEMP"]) as directory:
         root = Path(directory)
+        if options.inventory_existing:
+            STAGE = "read_only_existing_profile_inventory"
+            inventory_existing(module, root)
+            return
         STAGE = "identity_and_existing_profiles"
         preparing = options.prepare or options.prepare_profiles
         identity = prepare_identity(module, root, not preparing, create_profiles=options.prepare_profiles)
