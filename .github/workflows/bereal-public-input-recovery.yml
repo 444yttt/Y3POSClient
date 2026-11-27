@@ -1,0 +1,44 @@
+name: BeReal493 original public-share recovery
+on:
+  push:
+    branches: ['codex/bereal-public-input-recovery-20261127']
+    paths:
+      - '.github/workflows/bereal-public-input-recovery.yml'
+      - 'recovery/probe_public_input.py'
+      - 'recovery/signing-primary-public.pem'
+permissions:
+  contents: read
+concurrency:
+  group: bereal493-public-input-recovery
+  cancel-in-progress: false
+jobs:
+  probe:
+    if: ${{ github.repository == '444yttt/Y3POSClient' && github.ref == 'refs/heads/codex/bereal-public-input-recovery-20261127' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verify source syntax
+        run: python3 -m py_compile recovery/probe_public_input.py
+      - name: Recover and verify only the exact authorized original
+        run: python3 recovery/probe_public_input.py
+      - name: Save only safe recovery metadata
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: BeReal493-original-recovery-proof-${{ github.sha }}
+          path: bereal-recovery-public/recovery.json
+          retention-days: 90
+          if-no-files-found: warn
+      - name: Preserve only the authenticated encrypted original
+        if: ${{ always() && hashFiles('bereal-recovery-encrypted/input-metadata.json') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: BeReal493-original-encrypted-v3-${{ github.sha }}
+          path: |
+            bereal-recovery-encrypted/input-encrypted.bin
+            bereal-recovery-encrypted/input-metadata.json
+          retention-days: 90
+          if-no-files-found: error
