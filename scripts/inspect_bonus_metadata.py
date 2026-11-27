@@ -212,7 +212,7 @@ class MachO:
             self.unresolved += 1
             return None
         mapped = self.mapped(vm, 12)
-        if not mapped or mapped[1]["name"] not in ("__const", "__data"):
+        if not mapped or mapped[1]["name"] not in ("__const", "__data", "__constg_swiftt"):
             self.unresolved += 1
             return None
         flags, parent = struct.unpack_from("<Ii", self.data, mapped[0])

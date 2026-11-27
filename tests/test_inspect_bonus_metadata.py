@@ -19,14 +19,14 @@ SPEC.loader.exec_module(MODULE)
 BASE = 0x100000000
 
 
-def fixture(strings=None):
+def fixture(strings=None, context_section="__const"):
     data = bytearray(0x8000)
     strings = strings or b"bonusEligible\0https://invalid.example/bonus?token=private\0bonusTokenValue\0"
     methods = b"canPostBonus:\0remainingPosts\0"
     sections = [
         ("__swift5_fieldmd", 0x1000, 40), ("__swift5_reflstr", 0x2000, 1024),
         ("__cstring", 0x3000, len(strings)), ("__objc_methname", 0x4000, len(methods)),
-        ("__swift5_typeref", 0x5000, 48), ("__const", 0x6000, 64),
+        ("__swift5_typeref", 0x5000, 48), (context_section, 0x6000, 64),
     ]
     command_size = 72 + len(sections) * 80
     segment = struct.pack("<II16s4Q4I", 0x19, command_size, b"__TEXT",
@@ -82,6 +82,10 @@ class BonusMetadataTests(unittest.TestCase):
         self.assertEqual({field["name"] for field in model["related_fields"]}, {"canPostBonus", "momentID"})
         self.assertEqual(model["related_fields"][0]["type_hints"], ["Sb"])
         self.assertEqual(result["symbol_candidates"][0]["file_offset"], "0x1000")
+
+    def test_nominal_context_in_constg_swiftt_is_resolved(self):
+        result = MODULE.inspect_macho(fixture(context_section="__constg_swiftt"))
+        self.assertEqual(result["models"][0]["owner_name"], "Fixture.BonusEligibility")
 
     def test_does_not_emit_urls_credential_like_names_or_original_bytes(self):
         encoded = json.dumps(MODULE.inspect_macho(fixture()))
