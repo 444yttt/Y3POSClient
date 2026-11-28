@@ -100,6 +100,30 @@ class EnvelopeTests(unittest.TestCase):
             self.assertNotIn("private-marker", str(error.exception))
 
 
+class EncryptedBlobTests(unittest.TestCase):
+    def payload(self):
+        return {"url":SIGNER.BLOB_URL,"allowed_hosts":SIGNER.BLOB_HOSTS[:],"input_sha256":SIGNER.INPUT_SHA256,
+            "encrypted_blob":{"key":base64.b64encode(b"k"*32).decode(),"nonce":base64.b64encode(b"n"*12).decode(),"sha256":"a"*64,"bytes":SIGNER.BLOB_SIZE}}
+
+    def test_only_pinned_repository_asset_and_exact_blob_contract(self):
+        p=self.payload();self.assertEqual(SIGNER.validate_input(p),p)
+        for field,value in (("url",SIGNER.BLOB_URL+"?redirect=evil"),("allowed_hosts",["github.com"]),("input_sha256","0"*64),("extra",True)):
+            with self.subTest(field=field),self.assertRaises(SIGNER.BumpError):SIGNER.validate_input({**p,field:value})
+        for field,value in (("key","@@"),("nonce",base64.b64encode(b"n"*11).decode()),("bytes",True),("sha256","bad")):
+            with self.subTest(field=field),self.assertRaises(SIGNER.BumpError):SIGNER.validate_input({**p,"encrypted_blob":{**p["encrypted_blob"],field:value}})
+
+    def test_ciphertext_authenticated_before_original_hash_validation(self):
+        import hashlib
+        plain=b"fixture IPA";key=b"k"*32;nonce=b"n"*12
+        data=AESGCM(key).encrypt(nonce,plain,SIGNER.BLOB_AAD)
+        blob={**self.payload()["encrypted_blob"],"bytes":len(data),"sha256":hashlib.sha256(data).hexdigest()}
+        with mock.patch.object(SIGNER,"INPUT_SHA256",hashlib.sha256(plain).hexdigest()):self.assertEqual(SIGNER.authenticate_blob(data,blob),plain)
+        with self.assertRaisesRegex(SIGNER.BumpError,"original_input_sha256_mismatch"):SIGNER.authenticate_blob(data,blob)
+        with self.assertRaisesRegex(SIGNER.BumpError,"size_or_hash_mismatch"):SIGNER.authenticate_blob(data[:-1],blob)
+        changed=data[:-1]+bytes([data[-1]^1]);blob["sha256"]=hashlib.sha256(changed).hexdigest()
+        with self.assertRaisesRegex(SIGNER.BumpError,"authentication_failed"):SIGNER.authenticate_blob(changed,blob)
+
+
 class BundleTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()

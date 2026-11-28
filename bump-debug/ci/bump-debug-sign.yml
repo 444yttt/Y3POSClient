@@ -43,6 +43,7 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -v
           bash scripts/test-hooks-macos.sh
+          bash scripts/test-library-macos.sh
       - name: Prepare existing signing assets or sign authenticated input
         env:
           BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 || secrets.DIST_P12_BASE64 }}

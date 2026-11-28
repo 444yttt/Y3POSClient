@@ -101,7 +101,26 @@ def decode_b64(value, minimum, maximum):
     return result
 
 
+BLOB_URL = "https://raw.githubusercontent.com/444yttt/Y3POSClient/bump-encrypted-source-v1/input-encrypted.part-00"
+BLOB_HOSTS = ["raw.githubusercontent.com"]
+BLOB_AAD = b"BumpOriginalIPA-0b18338b-v1"
+BLOB_SIZE = 216450563 + 16
+
+
 def validate_input(payload):
+    if isinstance(payload, dict) and "encrypted_blob" in payload:
+        if (set(payload) != {"url", "allowed_hosts", "input_sha256", "encrypted_blob"} or
+                payload["url"] != BLOB_URL or payload["allowed_hosts"] != BLOB_HOSTS or
+                payload["input_sha256"] != INPUT_SHA256):
+            raise BumpError("invalid_encrypted_blob_scope")
+        blob = payload["encrypted_blob"]
+        if (not isinstance(blob, dict) or set(blob) != {"key", "nonce", "sha256", "bytes"} or
+                type(blob["bytes"]) is not int or blob["bytes"] != BLOB_SIZE or
+                not isinstance(blob["sha256"], str) or not re.fullmatch(r"[a-f0-9]{64}", blob["sha256"])):
+            raise BumpError("invalid_encrypted_blob_contract")
+        decode_b64(blob["key"], 32, 32)
+        decode_b64(blob["nonce"], 12, 12)
+        return payload
     if not isinstance(payload, dict) or set(payload) != {"url", "allowed_hosts", "input_sha256"}:
         raise BumpError("invalid_input_payload")
     if payload["input_sha256"] != INPUT_SHA256:
@@ -144,6 +163,45 @@ def decrypt_envelope(envelope, private_key_pem):
     except Exception:
         raise BumpError("encrypted_input_authentication_failed") from None
     return validate_input(payload)
+
+
+
+def authenticate_blob(data, blob):
+    """Authenticate the complete encrypted object before exposing any IPA bytes."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    if len(data) != blob["bytes"] or hashlib.sha256(data).hexdigest() != blob["sha256"]:
+        raise BumpError("encrypted_blob_size_or_hash_mismatch")
+    try:
+        plain = AESGCM(decode_b64(blob["key"], 32, 32)).decrypt(decode_b64(blob["nonce"], 12, 12), data, BLOB_AAD)
+    except Exception:
+        raise BumpError("encrypted_blob_authentication_failed") from None
+    if hashlib.sha256(plain).hexdigest() != INPUT_SHA256:
+        raise BumpError("original_input_sha256_mismatch")
+    return plain
+
+
+def download_original(module, payload, original):
+    if "encrypted_blob" not in payload:
+        module.download_url_input(payload["url"], original, payload["allowed_hosts"])
+        return
+    encrypted = original.with_suffix(".encrypted")
+    try:
+        # Restrict every redirect, bound bytes while streaming, then verify hash + GCM.
+        opener = urllib.request.build_opener(module.ScopedInputRedirects(BLOB_HOSTS))
+        size = 0
+        with encrypted.open("wb") as target:
+            for index in range(6):
+                url = payload["url"][:-2] + f"{index:02d}"
+                with opener.open(url, timeout=120) as response:
+                    module.validate_url_input(response.geturl(), BLOB_HOSTS)
+                    while chunk := response.read(1048576):
+                        size += len(chunk)
+                        if size > BLOB_SIZE:
+                            raise BumpError("encrypted_blob_too_large")
+                        target.write(chunk)
+        original.write_bytes(authenticate_blob(encrypted.read_bytes(), payload["encrypted_blob"]))
+    finally:
+        encrypted.unlink(missing_ok=True)
 
 
 def validate_bundles(app):
@@ -992,7 +1050,7 @@ def main(argv=None):
         # A temporary source URL is a bearer credential: mask before any use.
         print("::add-mask::" + payload["url"], flush=True)
         original = root / "original.ipa"
-        module.download_url_input(payload["url"], original, payload["allowed_hosts"])
+        download_original(module, payload, original)
         if digest(original) != INPUT_SHA256:
             raise BumpError("original_input_sha256_mismatch")
         original_keys = original_entitlement_keys(original)
