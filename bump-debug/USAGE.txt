@@ -1,11 +1,9 @@
-Bump 2.135.0 — native system location input
+Bump in-process synthetic location feed
 
-Install the official Reloc app separately using your normal signing/install process. Configure and start the location in Reloc, confirm its Core Location telemetry, then return to Bump. Stop and restore location from Reloc.
+Open 位置テスト inside Bump. Enter latitude,longitude lines, speed(m/s) and accuracy(m). Start/update the feed or stop it inside the same screen. One point is fixed; multiple points follow a great-circle route. Stops at the final point. Injection starts OFF each launch.
 
-Bump receives iOS Core Location unchanged. This build does not alter coordinates, timestamps, accuracy, speed/course or source flags, and does not synthesize timer callbacks. The old injection entry point always rejects activation. The position shown by iOS may come from an external accessory; it is not claimed to be built-in GPS measurement.
+This implementation directly substitutes only the two pinned Bump location callbacks and getter paths. Native callback batch cardinality/order/timestamps are retained. Periodic synthetic fixes are delivered only to a Bump manager that requested updates, on its observed delivery loop. Getter and callback fix identity match. Queued updates cannot cross stop/restart generations. Other managers and other apps are unaffected. Stop restores original future callbacks/getter; Bump may retain an old cached position until it reads/receives an update.
 
-Startup app-private App Group fallback supports the delivery identifier plus a validated signing-team suffix. Original App Group cross-extension sharing remains unavailable. Real-device launch and scratch behavior are unverified.
+Reloc's TargetLocation/NMEA data model is the technical reference: WGS84 coordinates, speed/course and timestamped fixes. Bump consumes CLLocation directly rather than iAP2/NMEA, with speed in m/s instead of NMEA knots. No accessory transport, separate app or MFi identity is used. No Reloc source is incorporated. No global CLLocation getters or provenance methods are overridden. Generated values use the standard public initializer with unspecified sourceInformation; they are test data and are not claimed to be measured GPS.
 
-Official Reloc source: https://github.com/Reukix/Reloc
-Official v1.0.4 IPA SHA256: f22b84a17253b002a1f397e1a675c248496854988c3bfac17599bc7fa7e89a96
-Reloc remains a separate AGPL application; no Reloc implementation or credential is incorporated into this Bump library.
+Startup app-private group fallback supports validated installer team suffixes. Original cross-extension App Group sharing remains unavailable. Native fixture tests do not execute Bump. Real-device launch and scratch-map/server acceptance remain unverified.

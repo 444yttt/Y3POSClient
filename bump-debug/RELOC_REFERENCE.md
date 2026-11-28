@@ -1,11 +1,9 @@
-Reloc reference review
-======================
-Reference: https://github.com/Reukix/Reloc at 2d375a9024379701aa93b1d4c060931b7dca05a1.
+Reloc reference — direct Bump feed
+===================================
 
-Reloc creates a local CoreAccessories virtual accessory, negotiates iAP2, performs MFi-v3 authentication, and streams GPGGA/GPRMC NMEA to iOS. It does not replace CLLocation properties inside Bump. Core Location telemetry, including isProducedByAccessory, is used to confirm actual acceptance; protocol ACK alone does not prove adoption.
+Reference https://github.com/Reukix/Reloc at2d375a9024379701aa93b1d4c060931b7dca05a1.
+Reloc represents a timestamped target using WGS84 coordinates, altitude, speed and course, serializing it into NMEA/iAP2. The current user requirement is direct synthetic data injection into Bump's existing location path, so no virtual accessory, MFi resource or separate app is used. No Reloc source is incorporated. Bump consumes CLLocation values rather than NMEA; its speed unit is m/s rather than knots.
 
-Its README requires user-supplied certificate.p7b and identity.pk8, not included in the repository. Existing Apple app distribution signing assets are different from these accessory credentials. The official v1.0.4 IPA was subsequently retrieved and its published SHA256 verified: f22b84a17253b002a1f397e1a675c248496854988c3bfac17599bc7fa7e89a96. It contains bundled MFi resources. No individual credential is extracted or embedded in Bump. Bump now receives iOS Core Location unchanged, with all in-app location injection disabled; the separate official Reloc app controls accessory location. See USAGE.txt. No Reloc code is incorporated into Bump.
+The adapter is scoped to the supplied2.135.0 build's two validated Objective-C callbacks and related manager getter. It preserves native batch order/cardinality/timestamps, marked downstream values and getter/callback fix identity. Explicit periodic input is limited to managers with active app requests and an observed callback run loop. Stop/start generations reject stale queued inputs. Default CLLocation source information is left unspecified by the standard value initializer; sourceInformation methods are not overridden. Synthetic values are not claimed to be hardware GPS measurements.
 
-Startup fix: accept a single validated 10-character signing-team suffix on the delivery bundle ID, while preserving exact binary version/build/executable guards. Install the app-private original-App-Group fallback before resolving optional location callback classes. Tests cover renamed identities, rejected malformed identities and missing/present/failing group-container resolution using filesystem fixtures.
-
-Device crash fix remains unverified on a real device until a rebuilt candidate is installed.
+The startup storage fix accepts a validated installer team suffix and is initialized before optional callback discovery. Real-device launch and scratch/server acceptance remain unverified.
