@@ -1,17 +1,11 @@
-Bump 2.135.0 location debugger
+Bump 2.135.0 — native system location input
 
-Supported input: Bump 2.135.0, build 261126153935.
+Install the official Reloc app separately using your normal signing/install process. Configure and start the location in Reloc, confirm its Core Location telemetry, then return to Bump. Stop and restore location from Reloc.
 
-Usage:
-1. Open Bump and allow its normal location access. The injected control appears at the top right.
-2. Open 位置テスト. Enter one latitude,longitude per line. One point holds a fixed position; multiple points play a route.
-3. Set speed in metres per second and horizontal accuracy in metres. Tap この座標で注入を開始.
-4. Stop with the stop control. Future callbacks and manager reads then use the original app behavior. The app may retain its last position until the next real update.
+Bump receives iOS Core Location unchanged. This build does not alter coordinates, timestamps, accuracy, speed/course or source flags, and does not synthesize timer callbacks. The old injection entry point always rejects activation. The position shown by iOS may come from an external accessory; it is not claimed to be built-in GPS measurement.
 
-The debugger starts OFF on every app launch. Synthetic timer delivery starts only after observing the actual manager delegate callback's run loop and while the app has requested ongoing updates. It does not change location permission or other apps' locations.
+Startup app-private App Group fallback supports the delivery identifier plus a validated signing-team suffix. Original App Group cross-extension sharing remains unavailable. Real-device launch and scratch behavior are unverified.
 
-Generated CLLocation objects explicitly carry isSimulatedBySoftware=YES. Bump reads this field; scratch-map/server acceptance is not established. This tool does not change paid entitlements or scratch counters.
-
-Signing uses a separate bundle identifier. App Group data cannot be shared with the original app; the main app uses an app-private container for group.co.amo if the original group is unavailable. KEYCHAIN_SHARED_GROUP is mapped only to a keychain group permitted by the selected profile.
-
-Native fixtures validate callback substitution, route calculations, stop restoration, forwarded callback identity and periodic delivery. These checks do not execute the real Bump app. Real-device installation, launch, login persistence, background operation, extensions and scratch-map results are unverified.
+Official Reloc source: https://github.com/Reukix/Reloc
+Official v1.0.4 IPA SHA256: f22b84a17253b002a1f397e1a675c248496854988c3bfac17599bc7fa7e89a96
+Reloc remains a separate AGPL application; no Reloc implementation or credential is incorporated into this Bump library.

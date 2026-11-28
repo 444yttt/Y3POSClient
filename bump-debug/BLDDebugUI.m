@@ -124,49 +124,11 @@ static BOOL BLDParseNumber(NSString *text, double *value) {
     ]];
 
     self.status = BLDLabel(@"", UIFontTextStyleFootnote);
-    self.status.accessibilityLabel = @"位置情報注入の状態";
+    self.status.accessibilityLabel = @"位置情報の入力方式";
     [stack addArrangedSubview:self.status];
-    [stack addArrangedSubview:BLDLabel(@"テスト座標（緯度, 経度）", UIFontTextStyleHeadline)];
-    [stack addArrangedSubview:BLDLabel(@"1行なら固定位置。複数行なら、その順に移動します（最大256地点）。開始するまで位置情報は置き換わりません。", UIFontTextStyleFootnote)];
-
-    self.coordinates = [[UITextView alloc] init];
-    self.coordinates.text = self.initialCoordinates;
-    self.coordinates.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
-        scaledFontForFont:[UIFont monospacedSystemFontOfSize:16 weight:UIFontWeightRegular]];
-    self.coordinates.adjustsFontForContentSizeCategory = YES;
-    self.coordinates.backgroundColor = UIColor.secondarySystemBackgroundColor;
-    self.coordinates.layer.cornerRadius = 8;
-    self.coordinates.textContainerInset = UIEdgeInsetsMake(10, 10, 10, 10);
-    self.coordinates.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
-    self.coordinates.autocapitalizationType = UITextAutocapitalizationTypeNone;
-    self.coordinates.autocorrectionType = UITextAutocorrectionTypeNo;
-    self.coordinates.spellCheckingType = UITextSpellCheckingTypeNo;
-    self.coordinates.accessibilityLabel = @"テスト座標。1行につき緯度、カンマ、経度";
-    [self.coordinates.heightAnchor constraintEqualToConstant:170].active = YES;
-    [stack addArrangedSubview:self.coordinates];
-
-    [stack addArrangedSubview:BLDLabel(@"移動速度（m/s、0で最初の地点に固定）", UIFontTextStyleHeadline)];
-    self.speed = BLDNumberField(self.initialSpeed, @"移動速度。メートル毎秒");
-    [stack addArrangedSubview:self.speed];
-    [stack addArrangedSubview:BLDLabel(@"水平精度（m、0より大きい数）", UIFontTextStyleHeadline)];
-    self.accuracy = BLDNumberField(self.initialAccuracy, @"水平精度。メートル");
-    [stack addArrangedSubview:self.accuracy];
-
-    self.startButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.startButton.configuration = [UIButtonConfiguration filledButtonConfiguration];
-    [self.startButton setTitle:@"この座標で注入を開始" forState:UIControlStateNormal];
-    [self.startButton addTarget:self action:@selector(start) forControlEvents:UIControlEventTouchUpInside];
-    self.startButton.accessibilityLabel = @"入力した座標で位置情報の置き換えを開始する";
-    [self.startButton.heightAnchor constraintGreaterThanOrEqualToConstant:48].active = YES;
-    [stack addArrangedSubview:self.startButton];
-
-    self.stopButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.stopButton.configuration = [UIButtonConfiguration borderedButtonConfiguration];
-    [self.stopButton setTitle:@"注入を停止して実際の位置に戻す" forState:UIControlStateNormal];
-    [self.stopButton addTarget:self action:@selector(stop) forControlEvents:UIControlEventTouchUpInside];
-    [self.stopButton.heightAnchor constraintGreaterThanOrEqualToConstant:48].active = YES;
-    [stack addArrangedSubview:self.stopButton];
-    [stack addArrangedSubview:BLDLabel(@"経路の終端では最後の地点に留まります。「完了」で画面を閉じても、開始した注入は停止するまで続きます。", UIFontTextStyleFootnote)];
+    [stack addArrangedSubview:BLDLabel(@"Relocで位置を設定", UIFontTextStyleHeadline)];
+    [stack addArrangedSubview:BLDLabel(@"Relocを別途インストールし、Relocで位置を設定・開始してからBumpに戻ってください。BumpはiOSから受け取った位置・時刻・精度・位置情報の出所を変更しません。", UIFontTextStyleBody)];
+    [stack addArrangedSubview:BLDLabel(@"停止・元の位置への復帰もReloc側で行います。位置が変わらない場合はRelocの実測表示と公式の復帰手順を確認してください。スクラッチへの反映は実機未確認です。", UIFontTextStyleFootnote)];
     [self refreshStatus];
 }
 
