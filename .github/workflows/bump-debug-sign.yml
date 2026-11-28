@@ -65,8 +65,23 @@ jobs:
           else
             python3 scripts/bump-resign.py --prepare
           fi
+      - name: Check output paths without hashing large encrypted files
+        id: artifact_presence
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          flags = {
+              "public": Path("bump-public").is_dir() and any(Path("bump-public").iterdir()),
+              "signed": Path("bump-output/BumpLocationDebug-signed.cms").is_file(),
+              "inventory": Path("bump-output/BumpLocationDebug-profile-inventory.cms").is_file(),
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              for name, present in flags.items():
+                  output.write(name + "=" + str(present).lower() + "\n")
+          PYTHON
       - name: Save only public input encryption key and readiness
-        if: ${{ hashFiles('bump-public/*') != '' }}
+        if: ${{ steps.artifact_presence.outputs.public == 'true' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: BumpLocationDebug-signing-readiness-${{ github.sha }}
@@ -74,15 +89,16 @@ jobs:
           retention-days: 7
           if-no-files-found: error
       - name: Save only recipient-encrypted signed delivery
-        if: ${{ hashFiles('bump-output/BumpLocationDebug-signed.cms') != '' }}
+        if: ${{ steps.artifact_presence.outputs.signed == 'true' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: BumpLocationDebug-signed-encrypted-${{ github.sha }}
           path: bump-output/BumpLocationDebug-signed.cms
+          compression-level: 0
           retention-days: 7
           if-no-files-found: error
       - name: Save encrypted existing-profile inventory
-        if: ${{ hashFiles('bump-output/BumpLocationDebug-profile-inventory.cms') != '' }}
+        if: ${{ steps.artifact_presence.outputs.inventory == 'true' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: BumpLocationDebug-profile-inventory-${{ github.sha }}
