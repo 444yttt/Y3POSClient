@@ -124,6 +124,17 @@ class EncryptedBlobTests(unittest.TestCase):
         with self.assertRaisesRegex(SIGNER.BumpError,"authentication_failed"):SIGNER.authenticate_blob(changed,blob)
 
 
+    def test_blob_transport_rejects_redirect_and_changed_response_scope(self):
+        with self.assertRaisesRegex(SIGNER.BumpError,"redirect_rejected"):
+            SIGNER.NoBlobRedirects().redirect_request(None,None,302,"",{},"https://evil.invalid")
+        response=mock.MagicMock();response.__enter__.return_value=response;response.geturl.return_value="https://evil.invalid"
+        opener=mock.Mock();opener.open.return_value=response
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(SIGNER.urllib.request,"build_opener",return_value=opener):
+            path=Path(d)/"original.ipa"
+            with self.assertRaisesRegex(SIGNER.BumpError,"response_scope_mismatch"):SIGNER.download_original(mock.Mock(),self.payload(),path)
+            self.assertFalse(path.exists());self.assertFalse(path.with_suffix(".encrypted").exists())
+
+
 class BundleTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()

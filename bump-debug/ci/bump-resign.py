@@ -18,6 +18,7 @@ import struct
 import sys
 import tempfile
 import urllib.parse
+import urllib.request
 import uuid
 import zipfile
 
@@ -180,6 +181,11 @@ def authenticate_blob(data, blob):
     return plain
 
 
+class NoBlobRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise BumpError("encrypted_blob_redirect_rejected")
+
+
 def download_original(module, payload, original):
     if "encrypted_blob" not in payload:
         module.download_url_input(payload["url"], original, payload["allowed_hosts"])
@@ -187,13 +193,14 @@ def download_original(module, payload, original):
     encrypted = original.with_suffix(".encrypted")
     try:
         # Restrict every redirect, bound bytes while streaming, then verify hash + GCM.
-        opener = urllib.request.build_opener(module.ScopedInputRedirects(BLOB_HOSTS))
+        opener = urllib.request.build_opener(NoBlobRedirects())
         size = 0
         with encrypted.open("wb") as target:
             for index in range(6):
                 url = payload["url"][:-2] + f"{index:02d}"
                 with opener.open(url, timeout=120) as response:
-                    module.validate_url_input(response.geturl(), BLOB_HOSTS)
+                    if response.geturl() != url:
+                        raise BumpError("encrypted_blob_response_scope_mismatch")
                     while chunk := response.read(1048576):
                         size += len(chunk)
                         if size > BLOB_SIZE:
