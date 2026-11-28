@@ -86,6 +86,17 @@ static BLDManagerState *BLDState(CLLocationManager *manager, BOOL create) {
     }
 }
 
+static CLLocation *BLDSaveLatest(BLDManagerState *state, CLLocation *location, NSUInteger generation) {
+    @synchronized(state) {
+        if (state.latestGeneration != generation || !state.latestInjected ||
+            [location.timestamp compare:state.latestInjected.timestamp] != NSOrderedAscending) {
+            state.latestInjected = location;
+            state.latestGeneration = generation;
+        }
+        return state.latestInjected;
+    }
+}
+
 static CLLocation *BLDSampledLocation(NSDate *timestamp, NSUInteger generation) {
     BLDController *controller = BLDShared();
     BLDSample sample;
@@ -157,7 +168,7 @@ static void BLDReceivedLocations(id delegate, SEL selector, CLLocationManager *m
         }
         if (manager.delegate == delegate) {
             BLDManagerState *state = BLDState(manager, YES);
-            @synchronized(state) { state.latestInjected = mapped.lastObject; state.latestGeneration = generation; }
+            BLDSaveLatest(state, mapped.lastObject, generation);
         }
         BLDOriginalCallbacks[index](delegate, selector, manager, mapped);
     } else BLDOriginalCallbacks[index](delegate, selector, manager, locations);
@@ -198,7 +209,7 @@ static void BLDSchedule(CLLocationManager *manager, BOOL oneShot) {
         if (!location) return;
         BLDController *controller = BLDShared();
         @synchronized(controller) { controller->injected++; controller->synthetic++; }
-        @synchronized(deliveryState) { deliveryState.latestInjected = location; deliveryState.latestGeneration = injectionGeneration; }
+        BLDSaveLatest(deliveryState, location, injectionGeneration);
         BLDOriginalCallbacks[index](delegate, @selector(locationManager:didUpdateLocations:), currentManager, @[location]);
     });
     CFRunLoopWakeUp(loop);
@@ -380,8 +391,7 @@ static CLLocation *BLDCurrentLocation(id manager, SEL selector) {
     if (!original) return nil;
     CLLocation *replacement = BLDSampledLocation(original.timestamp, generation);
     if (!replacement) return original;
-    @synchronized(state) { state.latestInjected = replacement; state.latestGeneration = generation; }
-    return replacement;
+    return BLDSaveLatest(state, replacement, generation);
 }
 
 static BOOL BLDIsObjectArgument(const char *encoding) {

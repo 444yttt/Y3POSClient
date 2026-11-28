@@ -380,6 +380,10 @@ int main(void) {
                 "background forwarding preserves periodic delivery to actual delegate");
         REQUIRE([objc_getAssociatedObject(firstDelegate, callbackMainThreadKey) boolValue],
                 "periodic delivery retains the actual delegate's main run loop");
+        CLLocation *latestTimed = currentLocation(firstManager);
+        deliver(firstDelegate, firstManager, originals);
+        REQUIRE(currentLocation(firstManager) == latestTimed,
+                "older native batch cannot regress the latest injected getter cache");
         invokeVoid(firstManager, @selector(stopUpdatingLocation));
 
         id secondDelegate = [secondClass new];
@@ -460,8 +464,8 @@ int main(void) {
             @"status": @"passed", @"checks": @(checks),
             @"fixture": @"NSObject manager doubles and exact-name delegate classes",
             @"real_location_api_calls": @0,
-            @"platform_default_simulated": @(currentLocation(firstManager).sourceInformation.isSimulatedBySoftware),
-            @"platform_default_accessory": @(currentLocation(firstManager).sourceInformation.isProducedByAccessory),
+            @"platform_default_simulated": @(((CLLocation *)replacement.lastObject).sourceInformation.isSimulatedBySoftware),
+            @"platform_default_accessory": @(((CLLocation *)replacement.lastObject).sourceInformation.isProducedByAccessory),
             @"app_binary_executed": @NO,
             @"covers": @[@"fail-closed installation", @"ABI rejection", @"idempotence",
                           @"disabled identity", @"route rejection", @"fixed replacement",
