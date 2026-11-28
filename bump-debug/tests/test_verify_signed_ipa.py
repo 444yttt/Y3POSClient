@@ -67,11 +67,19 @@ class CryptographicTests(unittest.TestCase):
             arguments.append('-nodetach')
         return subprocess.run(arguments, input=value, capture_output=True, check=True).stdout
 
-    def signed_macho(self, external=None):
+    def signed_macho(self, external=None, embedded_info=None, info_slot_binding=None):
         data = bytearray(4096)
-        data[:32] = struct.pack('<8I', 0xFEEDFACF, 0x100000C, 0, 2, 1, 16, 0, 0)
-        data[32:48] = struct.pack('<4I', 0x1D, 16, 4096, 4096)
-        data[128:160] = bytes(range(32))
+        commands = struct.pack('<4I', 0x1D, 16, 4096, 4096)
+        if embedded_info is not None:
+            segment = struct.pack('<II16s4Q4I', 0x19, 152, b'__TEXT', 0, 4096, 0, 4096, 7, 5, 1, 0)
+            section = struct.pack('<16s16s2Q8I', b'__info_plist', b'__TEXT', 512, len(embedded_info), 512, 0, 0, 0, 0, 0, 0, 0)
+            commands += segment + section
+            data[512:512 + len(embedded_info)] = embedded_info
+            external = dict(external or {})
+            external[1] = embedded_info if info_slot_binding is None else info_slot_binding
+        data[:32] = struct.pack('<8I', 0xFEEDFACF, 0x100000C, 0, 2, 2 if embedded_info is not None else 1, len(commands), 0, 0)
+        data[32:32 + len(commands)] = commands
+        data[256:288] = bytes(range(32))
         entitlements = {'application-identifier': 'ABCDE12345.com.ayato.bumpdebug',
                         'com.apple.developer.team-identifier': 'ABCDE12345',
                         'get-task-allow': False,
@@ -110,9 +118,26 @@ class CryptographicTests(unittest.TestCase):
 
     def test_code_page_tampering_rejected(self):
         data, _ = self.signed_macho()
-        changed = bytearray(data); changed[128] ^= 1
+        changed = bytearray(data); changed[256] ^= 1
         with self.assertRaisesRegex(verify.VerificationError, 'code-page hash mismatch'):
             self.run_verify(bytes(changed))
+
+    def test_standalone_dylib_embedded_info_plist_binds_special_slot_one(self):
+        info = plistlib.dumps({'CFBundleIdentifier': 'test.standalone.dylib', 'CFBundleVersion': '1'})
+        data, _ = self.signed_macho(embedded_info=info)
+        records = self.run_verify(data)
+        self.assertTrue(records[0]['embedded_info_plist_special_slot_verified'])
+        changed = bytearray(data); changed[512 + len(info) // 2] ^= 1
+        with self.assertRaises(verify.VerificationError):
+            self.run_verify(bytes(changed))
+
+    def test_valid_cms_and_pages_with_wrong_embedded_info_slot_hash_rejected(self):
+        # This is fully CMS-signed and its code-page hashes are valid. Only the
+        # embedded Info.plist versus special-slot binding is deliberately wrong.
+        info = plistlib.dumps({'CFBundleIdentifier': 'test.standalone.dylib'})
+        data, _ = self.signed_macho(embedded_info=info, info_slot_binding=b'other plist bytes')
+        with self.assertRaisesRegex(verify.VerificationError, 'resource hash mismatch'):
+            self.run_verify(data)
 
     def test_resource_special_slot_tampering_and_missing_binding_rejected(self):
         data, _ = self.signed_macho({1: b'Info', 3: b'Resources'})
@@ -183,6 +208,49 @@ class StructureTests(unittest.TestCase):
         bad = bytearray(signed); bad[32 + 24] ^= 1  # __LINKEDIT vmaddr is not a signing size
         with self.assertRaisesRegex(verify.VerificationError, 'load-command mutation'):
             verify._verify_main_provenance(bytes(original), bytes(bad))
+
+    def identity_patch_fixture(self):
+        signature_offset=0x364000
+        original=bytearray(signature_offset+4096)
+        segment=struct.pack('<II16s4Q4I',0x19,72,b'__LINKEDIT',0,8192,signature_offset,4096,7,1,0,0)
+        signature=struct.pack('<4I',0x1D,16,signature_offset,4096)
+        old=segment+signature
+        original[:32]=struct.pack('<8I',0xFEEDFACF,0x100000C,0,2,2,len(old),0,0)
+        original[32:32+len(old)]=old
+        patches=[(0x363c98,'72d12294','97feff97'),(0x363c9c,'080040f9','e80300aa'),(0x363ca0,'020d4ba9','020d41a9')]
+        for off,before,after in patches:original[off:off+4]=bytes.fromhex(before)
+        signed=bytearray(original)
+        name=verify.ADAPTER.encode()+b'\0';size=(24+len(name)+7)&~7
+        injected=struct.pack('<6I',0xC,size,24,0,0,0)+name+b'\0'*(size-24-len(name))
+        new=segment+injected+signature
+        struct.pack_into('<II',signed,16,3,len(new));signed[32:32+len(new)]=new
+        for off,before,after in patches:signed[off:off+4]=bytes.fromhex(after)
+        return original,signed,patches
+
+    def test_main_provenance_accepts_exact_reviewed_registry_patch(self):
+        original,signed,patches=self.identity_patch_fixture()
+        r=verify._verify_main_provenance(bytes(original),bytes(signed))
+        self.assertFalse(r['original_main_code_and_data_unchanged'])
+        self.assertTrue(r['original_main_unchanged_except_reviewed_identity_patch'])
+        self.assertTrue(r['app_identity_patch']['applied'])
+        self.assertEqual(r['app_identity_patch']['bytes_replaced'],12)
+        self.assertEqual(len(r['app_identity_patch']['instructions']),len(patches))
+
+    def test_main_provenance_rejects_partial_or_modified_registry_patch(self):
+        original,signed,patches=self.identity_patch_fixture()
+        for off,before,after in patches:
+            bad=bytearray(signed);bad[off:off+4]=bytes.fromhex(before)
+            with self.subTest(offset=off),self.assertRaisesRegex(verify.VerificationError,'exact app recognition patch'):
+                verify._verify_main_provenance(bytes(original),bytes(bad))
+        bad=bytearray(signed);bad[0x363c98]^=1
+        with self.assertRaises(verify.VerificationError):verify._verify_main_provenance(bytes(original),bytes(bad))
+
+    def test_main_provenance_rejects_other_payload_changes_with_valid_registry_patch(self):
+        original,signed,_=self.identity_patch_fixture()
+        for off in [147456,0x363c94,0x363ca4,0x363d18,0x3636f4]:
+            bad=bytearray(signed);bad[off]^=1
+            with self.subTest(offset=off),self.assertRaisesRegex(verify.VerificationError,'exact app recognition patch'):
+                verify._verify_main_provenance(bytes(original),bytes(bad))
 
     def test_wildcard_profile_is_concretized_without_original_identity(self):
         profile = {'ApplicationIdentifierPrefix': ['ABCDE12345'], 'TeamIdentifier': ['ABCDE12345'],

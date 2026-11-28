@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install authenticated input dependency
-        run: python3 -m pip install --disable-pip-version-check cryptography==50.0.0
+        run: python3 -m pip install --disable-pip-version-check cryptography==50.0.0 unicorn==2.1.4
       - name: Verify signer contracts
         run: |
           python3 -m unittest discover -s bump-debug/tests -p test_signer.py -v

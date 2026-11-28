@@ -248,6 +248,47 @@ def cms_signer(cms, directory, temporary):
     return ssl.PEM_cert_to_DER_cert(certificates[0].decode())
 
 
+def embedded_info_plist(executable, load_commands, endian, signature_offset):
+    """Read the signed __TEXT,__info_plist used by standalone Mach-O dylibs.
+
+    A standalone dylib can bind CodeDirectory slot 1 to this section even though
+    it has no enclosing bundle Info.plist. Use its complete section bytes,
+    including any padding, rather than reserializing the parsed dictionary.
+    """
+    found = []
+    for kind, command in load_commands:
+        if kind not in (0x1, 0x19):  # LC_SEGMENT and LC_SEGMENT_64
+            continue
+        is64 = kind == 0x19
+        header_size, section_size = (72, 80) if is64 else (56, 68)
+        require(len(command) >= header_size, 'Truncated embedded-info segment')
+        count = struct.unpack_from(endian + 'I', command, 64 if is64 else 48)[0]
+        require(header_size + count * section_size <= len(command), 'Truncated embedded-info section table')
+        segment = command[8:24].rstrip(b'\0')
+        for index in range(count):
+            offset = header_size + index * section_size
+            section = command[offset:offset + section_size]
+            if segment != b'__TEXT' or section[:16].rstrip(b'\0') != b'__info_plist':
+                continue
+            require(section[16:32].rstrip(b'\0') == b'__TEXT', 'Embedded-info section segment mismatch')
+            size = struct.unpack_from(endian + ('Q' if is64 else 'I'), section, 40 if is64 else 36)[0]
+            file_offset = struct.unpack_from(endian + 'I', section, 48 if is64 else 40)[0]
+            flags = struct.unpack_from(endian + 'I', section, 64 if is64 else 56)[0]
+            require(flags & 0xFF not in (1, 0xC, 0x12) and 0 < size <= 1024 * 1024
+                    and 0 < file_offset < signature_offset
+                    and file_offset + size <= signature_offset <= len(executable),
+                    'Embedded Info.plist is not bounded by signed file data')
+            value = executable[file_offset:file_offset + size]
+            try:
+                parsed = plistlib.loads(value)
+            except (ValueError, TypeError, plistlib.InvalidFileException):
+                raise VerificationError('Invalid embedded Info.plist') from None
+            require(isinstance(parsed, dict), 'Embedded Info.plist is not a dictionary')
+            found.append(value)
+    require(len(found) <= 1, 'Ambiguous embedded Info.plist sections')
+    return found[0] if found else None
+
+
 def verify_macho(data, temporary, certificate_cache, now, expected=None, external_slots=None):
     records = []
     for executable in macho_slices(data):
@@ -261,8 +302,15 @@ def verify_macho(data, temporary, certificate_cache, now, expected=None, externa
                 require(len(raw) >= 20 and struct.unpack_from(endian + 'I', raw, 16)[0] == 0,
                         'Unexpected encrypted Mach-O')
         slots = superblob(executable[offset:offset + size])
+        bound_external = dict(external_slots or {})
+        embedded_info_used = False
+        if 1 not in bound_external:
+            embedded_info = embedded_info_plist(executable, load_commands, endian, offset)
+            if embedded_info is not None:
+                bound_external[1] = embedded_info
+                embedded_info_used = True
         cds = [blob for slot, blob in slots.items() if slot == 0 or 0x1000 <= slot <= 0x1005]
-        identities = [code_directory(blob, executable, offset, slots, external_slots or {}) for blob in cds]
+        identities = [code_directory(blob, executable, offset, slots, bound_external) for blob in cds]
         require(len(set(identities)) == 1, 'CodeDirectories disagree on code identity')
         identifier, team = identities[0]
         der = cms_signer(slots[0x10000][8:], slots[0], temporary)
@@ -285,7 +333,8 @@ def verify_macho(data, temporary, certificate_cache, now, expected=None, externa
             require(7 in slots, 'Missing generated DER entitlements')
             require(fingerprint in expected['certificate_fingerprints'], 'Signer certificate is not granted by profile')
         records.append({'certificate_sha256': fingerprint, 'xml_entitlements': xml,
-                        'der_entitlements_present': 7 in slots})
+                        'der_entitlements_present': 7 in slots,
+                        'embedded_info_plist_special_slot_verified': embedded_info_used})
     require(len({record['certificate_sha256'] for record in records}) == 1,
             'Mach-O slices use different signing certificates')
     return records
@@ -377,8 +426,24 @@ def _verify_main_provenance(original, signed):
             'Main signature region exceeds the file')
     require(147456 <= original_signature <= signed_signature,
             'Signed main truncated original code or data')
-    require(signed[147456:original_signature] == original[147456:original_signature],
-            'Main executable code or data changed outside header/signature regions')
+    # Independently recognize exactly the reviewed 12-byte registry-key change.
+    # A partial patch, any different instruction or any other payload change fails.
+    identity_changes = [
+        (0x363C98, bytes.fromhex("72d12294"), bytes.fromhex("97feff97")),
+        (0x363C9C, bytes.fromhex("080040f9"), bytes.fromhex("e80300aa")),
+        (0x363CA0, bytes.fromhex("020d4ba9"), bytes.fromhex("020d41a9")),
+    ]
+    original_body = original[147456:original_signature]
+    signed_body = signed[147456:original_signature]
+    identity_applied = original_body != signed_body
+    if identity_applied:
+        restored = bytearray(signed_body)
+        for offset, expected, replacement in identity_changes:
+            require(original[offset:offset + 4] == expected and signed[offset:offset + 4] == replacement,
+                    'Main executable code or data changed outside exact app recognition patch')
+            restored[offset - 147456:offset - 147456 + 4] = expected
+        require(bytes(restored) == original_body,
+                'Main executable code or data changed outside exact app recognition patch')
 
     def normalized(raw_commands, injected):
         result, dependencies = [], []
@@ -403,9 +468,13 @@ def _verify_main_provenance(original, signed):
 
     require(normalized(old, False) == normalized(new, True),
             'Unexpected main load-command mutation')
-    return {'original_main_code_and_data_unchanged': True,
+    return {'original_main_code_and_data_unchanged': not identity_applied,
+            'original_main_unchanged_except_reviewed_identity_patch': True,
+            'app_identity_patch': {'applied': identity_applied, 'bytes_replaced': 12 if identity_applied else 0,
+                'instructions': [{'offset': off, 'original': old.hex(), 'replacement': new.hex()}
+                                 for off, old, new in identity_changes] if identity_applied else []},
             'first_original_section_offset': 147456,
-            'allowed_changes': 'load-command injection, signature region and __LINKEDIT signing sizes'}
+            'allowed_changes': 'reviewed 12-byte native Bump registry key, load-command injection, signature region and __LINKEDIT signing sizes'}
 
 
 def _external_slots(archive, names):
@@ -459,7 +528,7 @@ def verify(ipa, original_path, receipt_path=None):
         require(receipt.get('bundle_identifier') == ROOT_ID, 'CI receipt bundle identity mismatch')
         require(receipt.get('provisioned_bundle_count') == 9, 'CI receipt bundle count mismatch')
     certificate_cache, provisioned_devices, profile_ids = {}, set(), set()
-    total_macho = total_slices = 0
+    total_macho = total_slices = total_embedded_info = 0
     all_signers, verified_executables, seen_ids = set(), set(), set()
     profiles = []
     with tempfile.TemporaryDirectory(prefix='bump-independent-check-') as directory, zipfile.ZipFile(ipa) as archive:
@@ -522,6 +591,7 @@ def verify(ipa, original_path, receipt_path=None):
             all_signers.add(signer)
             total_macho += 1
             total_slices += len(records)
+            total_embedded_info += sum(record['embedded_info_plist_special_slot_verified'] for record in records)
             verified_executables.add(executable_path)
             profiles.append({'bundle_identifier': identifier,
                              'application_identifier_kind': 'wildcard' if '*' in profile['Entitlements']['application-identifier'] else 'explicit',
@@ -541,6 +611,7 @@ def verify(ipa, original_path, receipt_path=None):
                 all_signers.update(record['certificate_sha256'] for record in records)
                 total_macho += 1
                 total_slices += len(records)
+                total_embedded_info += sum(record['embedded_info_plist_special_slot_verified'] for record in records)
                 verified_executables.add(item.filename)
         require(len(all_signers) == 1, 'Nested code uses a different signing certificate')
         if receipt is not None and 'certificate_sha256' in receipt:
@@ -559,6 +630,7 @@ def verify(ipa, original_path, receipt_path=None):
                                       'signed_macho_file_count': total_macho, 'signed_macho_slice_count': total_slices,
                                       'cms_signature_and_code_page_hashes': True,
                                       'signature_special_slot_hashes': True,
+                                      'embedded_info_plist_special_slots_verified': total_embedded_info,
                                       'executable_modes': True,
                                       'main_provenance': provenance, 'profiles': profiles},
             'limitations': ['Apple CA trust, certificate revocation and macOS codesign are not independently checked on Linux.',

@@ -186,6 +186,37 @@ def _patch_macho(data: bytes, *, inject: bool):
     }
 
 
+# GalaxyApps.current in the exact supplied 2.135.0 ARM64 image. Select the
+# native Bump entry as the comparison key instead of cached installer URL data.
+# The original registry search, value copying and failure path remain intact.
+APP_IDENTITY_PATCHES = (
+    (0x363C98, bytes.fromhex("72d12294"), bytes.fromhex("97feff97")),
+    (0x363C9C, bytes.fromhex("080040f9"), bytes.fromhex("e80300aa")),
+    (0x363CA0, bytes.fromhex("020d4ba9"), bytes.fromhex("020d41a9")),
+)
+REGISTRY_LOOKUP_SHA256 = "6485765d7ed1b01eb5b52d27f148efd3cd4a123b13321312dbf08372cffdee25"
+BUMP_GETTER_SHA256 = "488065f35b4d2541d766a2904571e19507aaea7c43b9ae6f27be0a38dfbf327f"
+
+
+def _patch_app_identity(data: bytes):
+    commands, _ = _macho_commands(data, 2)
+    uuids = [raw[8:24] for kind, raw in commands if kind == 0x1B and len(raw) == 24]
+    if uuids != [bytes.fromhex("ea3612276ee13979b8df242f24fe47dc")]:
+        raise PackagingError("App recognition patch requires the pinned executable UUID")
+    if (hashlib.sha256(data[0x363C38:0x363D40]).hexdigest() != REGISTRY_LOOKUP_SHA256 or
+            hashlib.sha256(data[0x3636F4:0x363720]).hexdigest() != BUMP_GETTER_SHA256):
+        raise PackagingError("App recognition code does not match the reviewed ARM64 functions")
+    result = bytearray(data)
+    changes = []
+    for offset, expected, replacement in APP_IDENTITY_PATCHES:
+        if data[offset:offset + 4] != expected:
+            raise PackagingError("App recognition instruction mismatch")
+        result[offset:offset + 4] = replacement
+        changes.append({"offset": offset, "original": expected.hex(), "replacement": replacement.hex()})
+    return bytes(result), {"kind": "native_bump_registry_key", "instructions": changes,
+                           "bytes_replaced": 12, "native_search_and_failure_path_preserved": True}
+
+
 def _validate_archive(entries):
     seen = set()
     files = set()
@@ -256,6 +287,9 @@ def _package_ipa(source: Path, library: Path, output: Path, *, contract: _InputC
             except KeyError as error:
                 raise PackagingError("Missing root executable") from error
             patched_main, main_patch = _patch_macho(main_bytes, inject=True)
+            if contract == PINNED_INPUT:
+                patched_main, recognition = _patch_app_identity(patched_main)
+                main_patch["app_recognition"] = recognition
             output.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(prefix=".bump-package-", suffix=".ipa", dir=output.parent, delete=False) as stream:
                 temporary = Path(stream.name)

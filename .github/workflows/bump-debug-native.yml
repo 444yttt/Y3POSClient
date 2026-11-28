@@ -25,7 +25,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install authenticated input test dependency
-        run: python3 -m pip install --disable-pip-version-check cryptography==50.0.0
+        run: python3 -m pip install --disable-pip-version-check cryptography==50.0.0 unicorn==2.1.4
       - name: Test route engine and IPA packaging
         run: python3 -m unittest discover -s tests -v
       - name: Exercise callback injection and restoration

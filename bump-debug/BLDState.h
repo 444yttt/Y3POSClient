@@ -9,6 +9,5 @@ FOUNDATION_EXPORT NSString *BLDStatusText(void);
 FOUNDATION_EXPORT void BLDInstallDebugUI(void);
 FOUNDATION_EXPORT BOOL BLDInstallHooks(void);
 FOUNDATION_EXPORT BOOL BLDIsSupportedBundleInfo(NSDictionary *info);
-FOUNDATION_EXPORT NSDictionary *BLDAppInfoDictionary(NSDictionary *original, BOOL isMainBundle, NSUInteger callerOffset);
 FOUNDATION_EXPORT NSURL * _Nullable BLDResolveGroupContainer(NSFileManager *files, NSURL * _Nullable original, NSString *group);
 NS_ASSUME_NONNULL_END
