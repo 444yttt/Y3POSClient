@@ -44,6 +44,11 @@ static void result(NSString *status, NSString *detail) {
     [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
     NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"status":status,@"detail":detail,@"checks":@(checks),@"real_location_calls":@0,@"app_binary_executed":@NO} options:NSJSONWritingPrettyPrinted error:NULL];
     [data writeToFile:[dir stringByAppendingPathComponent:@"ui-tests.json"] atomically:YES];
+    if(hostWindow){
+        UIGraphicsImageRenderer *renderer=[[UIGraphicsImageRenderer alloc] initWithBounds:hostWindow.bounds];
+        NSData *png=[renderer PNGDataWithActions:^(UIGraphicsImageRendererContext *context){(void)context;[hostWindow drawViewHierarchyInRect:hostWindow.bounds afterScreenUpdates:NO];}];
+        [png writeToFile:[dir stringByAppendingPathComponent:@"ui-in-app.png"] atomically:YES];
+    }
 }
 static void check(BOOL value, NSString *detail) {
     checks++;
@@ -83,7 +88,7 @@ static void useItem(UIBarButtonItem *item) {
 }
 static void waitFor(BOOL (^condition)(void),NSUInteger tries,dispatch_block_t completion) {
     if(condition()){completion();return;}
-    check(tries>0,@"asynchronous file import finishes within deadline");
+    check(tries>0,@"asynchronous UI action finishes within deadline");
     after(0.1,^{waitFor(condition,tries-1,completion);});
 }
 static void libraryChecks(UIViewController *form,dispatch_block_t completion) {
@@ -111,10 +116,13 @@ static void libraryChecks(UIViewController *form,dispatch_block_t completion) {
                 UIAlertController *name=(UIAlertController *)form.presentedViewController;
                 check([name isKindOfClass:UIAlertController.class] && name.textFields.count==1 && [name.title isEqual:@"地点"],@"save-place control requests a name");
                 [name dismissViewControllerAnimated:NO completion:^{
-                    [button(nil,@"bld.importFile") sendActionsForControlEvents:UIControlEventTouchUpInside];
-                    after(0.5,^{
-                        UIViewController *picker=form.presentedViewController;
-                        check([picker isKindOfClass:UIDocumentPickerViewController.class],@"file import opens the system document picker");
+                    after(0.3,^{
+                    UIButton *import=(UIButton *)find(form.view,^BOOL(UIView *v){return [v.accessibilityIdentifier isEqualToString:@"bld.importFile"];});
+                    check(import && import.enabled && form.view.window!=nil,@"import control is attached after naming alert closes");
+                    [import sendActionsForControlEvents:UIControlEventTouchUpInside];
+                    after(2.0,^{
+                        UIViewController *picker=form.presentedViewController?:form.navigationController.presentedViewController;
+                        check([picker isKindOfClass:UIDocumentPickerViewController.class],[NSString stringWithFormat:@"file import opens system picker; actual=%@ nav=%@",NSStringFromClass(form.presentedViewController.class),NSStringFromClass(form.navigationController.presentedViewController.class)]);
                         [picker dismissViewControllerAnimated:NO completion:^{
                             NSURL *url=[[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject URLByAppendingPathComponent:@"fixture-import.txt"];
                             [@"48.868293,2.301152\n48.869000,2.302000" writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:NULL];
@@ -129,6 +137,7 @@ static void libraryChecks(UIViewController *form,dispatch_block_t completion) {
                                 completion();
                             });
                         }];
+                    });
                     });
                 }];
             });

@@ -59,6 +59,8 @@ done
 [[ -f "$container/Documents/ui-tests.json" ]] || { echo 'UIKit host did not produce its result' >&2; exit 1; }
 cp "$container/Documents/ui-tests.json" "$project_dir/output/ui-tests.json"
 cat "$project_dir/output/ui-tests.json"
+if [[ -f "$container/Documents/ui-in-app.png" ]]; then cp "$container/Documents/ui-in-app.png" "$project_dir/output/ui-in-app.png"; fi
+xcrun simctl spawn "$device_id" log show --last 3m --style compact --predicate 'process == "BLDUIHost"' > "$project_dir/output/ui-host.log" 2>&1 || true
 xcrun simctl io "$device_id" screenshot "$project_dir/output/ui-host.png"
 python3 - "$project_dir/output/ui-tests.json" <<'PY'
 import json,sys

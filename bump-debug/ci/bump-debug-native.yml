@@ -47,5 +47,7 @@ jobs:
             bump-debug/output/library-tests.json
             bump-debug/output/ui-tests.json
             bump-debug/output/ui-host.png
+            bump-debug/output/ui-in-app.png
+            bump-debug/output/ui-host.log
           retention-days: 7
           if-no-files-found: error
