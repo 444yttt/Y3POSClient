@@ -233,8 +233,12 @@ static void checkSample(CLLocation *location, double latitude, double longitude,
     REQUIRE(location.verticalAccuracy < 0.0, "altitude accuracy remains unknown");
     REQUIRE(location.speed == 0.0, "fixed point has zero speed");
     REQUIRE(location.course < 0.0, "fixed point has unknown course");
-    REQUIRE(location.sourceInformation == nil, "default CLLocation has no fabricated source metadata");
-    REQUIRE(!location.sourceInformation.isProducedByAccessory, "external accessory flag is false");
+    CLLocation *platformDefault = [[CLLocation alloc] initWithCoordinate:CLLocationCoordinate2DMake(latitude,longitude)
+        altitude:0 horizontalAccuracy:accuracy verticalAccuracy:-1 course:-1 courseAccuracy:-1 speed:0 speedAccuracy:0.2 timestamp:earliest];
+    REQUIRE(location.sourceInformation.isSimulatedBySoftware == platformDefault.sourceInformation.isSimulatedBySoftware,
+            "source information follows the platform public initializer default");
+    REQUIRE(location.sourceInformation.isProducedByAccessory == platformDefault.sourceInformation.isProducedByAccessory,
+            "accessory provenance is not fabricated");
     REQUIRE([location.timestamp isEqualToDate:earliest], "native callback timestamp is preserved");
 
 }
@@ -242,6 +246,8 @@ static void checkSample(CLLocation *location, double latitude, double longitude,
 int main(void) {
     @autoreleasepool {
         REQUIRE(NSThread.isMainThread, "harness runs on main thread");
+        IMP sourceSimulation = class_getMethodImplementation(CLLocationSourceInformation.class,@selector(isSimulatedBySoftware));
+        IMP sourceAccessory = class_getMethodImplementation(CLLocationSourceInformation.class,@selector(isProducedByAccessory));
         checkStartup();
         installManagerFixtures();
         IMP beforeInstall = class_getMethodImplementation(CLLocationManager.class, @selector(setDelegate:));
@@ -263,6 +269,8 @@ int main(void) {
         REQUIRE(objc_getClass(secondName) == Nil, "discard incompatible fixture without instances");
         secondClass = makeDelegateClass(secondName, "v32@0:8@16@24");
         REQUIRE(BLDInstallHooks(), "both exact callbacks install successfully");
+        REQUIRE(sourceSimulation == class_getMethodImplementation(CLLocationSourceInformation.class,@selector(isSimulatedBySoftware)), "simulation provenance implementation untouched");
+        REQUIRE(sourceAccessory == class_getMethodImplementation(CLLocationSourceInformation.class,@selector(isProducedByAccessory)), "accessory provenance implementation untouched");
         IMP installed = class_getMethodImplementation(firstClass, @selector(locationManager:didUpdateLocations:));
         IMP installedManager = class_getMethodImplementation(CLLocationManager.class, @selector(setDelegate:));
         REQUIRE(installed != (IMP)receive, "target callback was replaced");
@@ -452,6 +460,8 @@ int main(void) {
             @"status": @"passed", @"checks": @(checks),
             @"fixture": @"NSObject manager doubles and exact-name delegate classes",
             @"real_location_api_calls": @0,
+            @"platform_default_simulated": @(currentLocation(firstManager).sourceInformation.isSimulatedBySoftware),
+            @"platform_default_accessory": @(currentLocation(firstManager).sourceInformation.isProducedByAccessory),
             @"app_binary_executed": @NO,
             @"covers": @[@"fail-closed installation", @"ABI rejection", @"idempotence",
                           @"disabled identity", @"route rejection", @"fixed replacement",
