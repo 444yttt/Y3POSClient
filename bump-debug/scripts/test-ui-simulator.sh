@@ -16,19 +16,25 @@ trap cleanup EXIT
 mkdir -p "$project_dir/output"
 xcrun simctl list runtimes --json > "$test_dir/runtimes.json"
 xcrun simctl list devicetypes --json > "$test_dir/types.json"
-python3 - "$test_dir" <<'PY'
+sdk_version="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+python3 - "$test_dir" "$sdk_version" <<'PY'
 import json,sys
 from pathlib import Path
 p=Path(sys.argv[1])
 r=[r for r in json.loads((p/'runtimes.json').read_text())['runtimes'] if r.get('isAvailable') and '.iOS-' in r['identifier']]
 assert r,'No available iOS simulator runtime'
 r.sort(key=lambda v:tuple(int(n) for n in v['version'].split('.')))
+sdk_major=int(sys.argv[2].split('.')[0])
+matching=[v for v in r if int(v['version'].split('.')[0])==sdk_major]
+if matching:r=matching
+print('UIKit test runtime:',r[-1]['identifier'],'SDK:',sys.argv[2])
 t=json.loads((p/'types.json').read_text())['devicetypes']
 choices=[x for x in t if x['identifier'] in ('com.apple.CoreSimulator.SimDeviceType.iPhone-16','com.apple.CoreSimulator.SimDeviceType.iPhone-15')]
 assert choices,'No supported iPhone simulator type'
 (p/'runtime').write_text(r[-1]['identifier']);(p/'type').write_text(choices[0]['identifier'])
 PY
 device_id="$(xcrun simctl create BumpUIRegression "$(cat "$test_dir/type")" "$(cat "$test_dir/runtime")")"
+defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool NO
 xcrun simctl boot "$device_id"
 xcrun simctl bootstatus "$device_id" -b
 app="$test_dir/BLDUIHost.app"

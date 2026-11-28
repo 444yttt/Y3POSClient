@@ -10,6 +10,14 @@ static double lastSpeed,lastAccuracy;
 static UIWindow *hostWindow;
 static UIViewController *hostRoot;
 static BOOL scheduled;
+static UITextField *nativeAge;
+static UIButton *nativeContinue;
+static NSUInteger nativeEnds,nativeContinues;
+@interface BLDTouchFixture : NSObject
+@property(nonatomic,strong) UIView *view;
+@end
+@implementation BLDTouchFixture
+@end
 
 BOOL BLDStart(NSArray<NSArray<NSNumber *> *> *points, double speed, double accuracy, NSError **error) {
     (void)error;
@@ -53,14 +61,18 @@ static void checkHost(void) {
     check(hostWindow.windowLevel == UIWindowLevelNormal,@"application window level is unchanged");
     check([hostRoot.view.backgroundColor isEqual:UIColor.whiteColor],@"original visible content is unchanged");
 }
-static void runChecks(void) {
-    checkHost();
-    NSUInteger visible = 0;
-    for (UIWindow *window in hostWindow.windowScene.windows) if (!window.hidden && window.alpha > 0 && window.rootViewController) visible++;
-    check(visible == 1,@"debug controls create no extra visible application window");
+static UIBarButtonItem *toolbarItem(UIView *input,NSString *title) {
+    UIView *accessory = input.inputAccessoryView;
+    check([accessory isKindOfClass:UIToolbar.class],@"every editor has a keyboard toolbar");
+    for (UIBarButtonItem *item in ((UIToolbar *)accessory).items) if ([item.title isEqualToString:title]) return item;
+    return nil;
+}
+static void useItem(UIBarButtonItem *item) {
+    check(item != nil && item.enabled,@"keyboard toolbar action is available");
+    [UIApplication.sharedApplication sendAction:item.action to:item.target from:item forEvent:nil];
+}
+static void openDebugChecks(void) {
     UIButton *open = button(nil,@"bld.openControls");
-    check(open != nil && !open.hidden,@"debug button attaches to ready application window");
-    check(open.window == hostWindow,@"debug button uses existing app window");
     [open sendActionsForControlEvents:UIControlEventTouchUpInside];
     after(0.8, ^{
         checkHost();
@@ -68,38 +80,124 @@ static void runChecks(void) {
         check([nav isKindOfClass:UINavigationController.class],@"controls present from original app controller");
         UIViewController *form = nav.topViewController;
         check([form.title isEqualToString:@"位置情報テスト"],@"location controls are visible");
-        UIButton *copy = button(nil,@"bld.copyScreenDiagnostics");
-        check(copy != nil,@"screen diagnostics are available");
+        UIButton *toggle=button(nil,@"bld.toggleDiagnostics");
+        UIButton *copy=button(nil,@"bld.copyScreenDiagnostics");
+        check(toggle && copy.hidden,@"technical diagnostics start collapsed");
+        [toggle sendActionsForControlEvents:UIControlEventTouchUpInside];
+        check(!copy.hidden,@"diagnostics can be expanded");
         [copy sendActionsForControlEvents:UIControlEventTouchUpInside];
-        check([UIPasteboard.generalPasteboard.string containsString:@"existing-app-window/v1"],@"diagnostic copy records UI revision");
-        UITextView *coordinates = (UITextView *)find(form.view,^BOOL(UIView *view) { return [view isKindOfClass:UITextView.class]; });
-        check(coordinates != nil,@"coordinate editor remains available");
+        check([UIPasteboard.generalPasteboard.string containsString:@"existing-app-window/v2-keyboard"],@"diagnostic copy identifies keyboard revision");
+        [toggle sendActionsForControlEvents:UIControlEventTouchUpInside];
+        UITextView *coordinates=(UITextView *)find(form.view,^BOOL(UIView *v){return [v.accessibilityIdentifier isEqualToString:@"bld.coordinates"];});
+        UITextField *speed=(UITextField *)find(form.view,^BOOL(UIView *v){return [v.accessibilityIdentifier isEqualToString:@"bld.speed"];});
+        UITextField *accuracy=(UITextField *)find(form.view,^BOOL(UIView *v){return [v.accessibilityIdentifier isEqualToString:@"bld.accuracy"];});
+        check(coordinates && speed && accuracy,@"all input fields are accessible");
+        NSString *originalCoordinates=coordinates.text;
         [coordinates becomeFirstResponder];
-        after(0.7, ^{
-            check(hostWindow.isKeyWindow,@"editing does not steal app key status");
-            UIButton *start = button(@"この座標で開始・更新",nil);
-            check(start != nil,@"start/update control remains available");
+        after(0.8, ^{
+            check(coordinates.isFirstResponder,@"coordinate editor accepts focus");
+            check(coordinates.inputAccessoryView.window != nil,@"keyboard close toolbar is attached to a visible keyboard");
+            useItem(toolbarItem(coordinates,@"キーボードを閉じる"));
+            check(!coordinates.isFirstResponder,@"coordinate keyboard dismisses without closing form");
+            check([coordinates.text isEqualToString:originalCoordinates],@"keyboard dismissal preserves coordinate text");
+            [coordinates becomeFirstResponder];
+            useItem(toolbarItem(coordinates,@"次へ"));
+            check(speed.isFirstResponder,@"next moves from coordinates to speed");
+            useItem(toolbarItem(speed,@"次へ"));
+            check(accuracy.isFirstResponder,@"next moves to accuracy");
+            check(!toolbarItem(accuracy,@"次へ").enabled,@"next is disabled at final field");
+            useItem(toolbarItem(accuracy,@"前へ"));
+            check(speed.isFirstResponder,@"previous returns to speed");
+            useItem(toolbarItem(speed,@"キーボードを閉じる"));
+            check(!speed.isFirstResponder,@"numeric keyboard has a working dismiss action");
+            [accuracy becomeFirstResponder];
+            useItem(toolbarItem(accuracy,@"キーボードを閉じる"));
+            check(!accuracy.isFirstResponder,@"accuracy numeric keyboard dismisses");
+            UIScrollView *scroll=(UIScrollView *)find(form.view,^BOOL(UIView *v){return [v isKindOfClass:UIScrollView.class] && ![v isKindOfClass:UITextView.class];});
+            UITapGestureRecognizer *blank=nil;
+            for (UIGestureRecognizer *g in scroll.gestureRecognizers) if ([g isKindOfClass:UITapGestureRecognizer.class] && g.delegate==(id)form) blank=(UITapGestureRecognizer *)g;
+            check(blank && !blank.cancelsTouchesInView,@"blank-area dismiss gesture does not cancel controls");
+            BLDTouchFixture *touch=[BLDTouchFixture new];touch.view=speed;
+            check(![blank.delegate gestureRecognizer:blank shouldReceiveTouch:(UITouch *)(id)touch],@"editing field taps are preserved");
+            touch.view=button(nil,@"bld.startFeed");
+            check(![blank.delegate gestureRecognizer:blank shouldReceiveTouch:(UITouch *)(id)touch],@"action button taps are preserved");
+            touch.view=[UILabel new];
+            check([blank.delegate gestureRecognizer:blank shouldReceiveTouch:(UITouch *)(id)touch],@"blank content permits keyboard dismissal");
+            check(scroll.keyboardDismissMode==UIScrollViewKeyboardDismissModeInteractive,@"dragging can dismiss the keyboard interactively");
+            [speed becomeFirstResponder];speed.text=@"invalid";
+            UIButton *start=button(nil,@"bld.startFeed");
             [start sendActionsForControlEvents:UIControlEventTouchUpInside];
-            check(enabled && starts == 1,@"UI sends coordinate configuration to feed entry");
-            check(lastPoints.count == 1 && fabs([lastPoints[0][0] doubleValue]-35.681236)<0.000001 && fabs([lastPoints[0][1] doubleValue]-139.767125)<0.000001,@"coordinate fields reach the feed unchanged");
-            check(fabs(lastSpeed-1.4)<0.001 && fabs(lastAccuracy-5)<0.001,@"speed and accuracy fields reach the feed unchanged");
-            UIButton *stop = button(@"注入を停止して実際の位置に戻す",nil);
-            check(stop != nil && stop.enabled,@"stop control is enabled while feed active");
-            [stop sendActionsForControlEvents:UIControlEventTouchUpInside];
-            check(!enabled && stops == 1,@"UI stops the feed");
-            UIBarButtonItem *done = form.navigationItem.rightBarButtonItem;
-            [UIApplication.sharedApplication sendAction:done.action to:done.target from:done forEvent:nil];
-            after(0.8, ^{
-                checkHost();
-                check(hostRoot.presentedViewController == nil,@"closing controls restores original app content");
-                check(button(nil,@"bld.openControls") && !button(nil,@"bld.openControls").hidden,@"debug button returns after dismissal");
-                result(@"passed",@"existing window, root, key status, content, editing, controls and dismissal verified");
-            });
+            check(!speed.isFirstResponder && !enabled && starts==0,@"invalid input dismisses keyboard and does not start feed");
+            UIViewController *alert=form.presentedViewController;
+            check([alert isKindOfClass:UIAlertController.class],@"validation message remains accessible");
+            [alert dismissViewControllerAnimated:NO completion:^{
+                speed.text=@"1.4";
+                [coordinates becomeFirstResponder];
+                after(0.7, ^{
+                    [form.view layoutIfNeeded];
+                    CGRect frame=[start convertRect:start.bounds toView:form.view];
+                    check(CGRectGetMaxY(frame)<=CGRectGetMinY(form.view.keyboardLayoutGuide.layoutFrame)+1,@"start action stays above keyboard");
+                    [start sendActionsForControlEvents:UIControlEventTouchUpInside];
+                    check(enabled && starts==1 && !coordinates.isFirstResponder,@"start works while keyboard is open and dismisses it");
+                    check(lastPoints.count==1 && fabs([lastPoints[0][0] doubleValue]-35.681236)<0.000001 && fabs([lastPoints[0][1] doubleValue]-139.767125)<0.000001,@"coordinate data reaches feed unchanged");
+                    check(fabs(lastSpeed-1.4)<0.001 && fabs(lastAccuracy-5)<0.001,@"numeric data reaches feed unchanged");
+                    [accuracy becomeFirstResponder];
+                    UIButton *stop=button(nil,@"bld.stopFeed");
+                    [stop sendActionsForControlEvents:UIControlEventTouchUpInside];
+                    check(!enabled && stops==1 && !accuracy.isFirstResponder,@"stop works without manually hiding keyboard first");
+                    [coordinates becomeFirstResponder];
+                    UIBarButtonItem *done=form.navigationItem.rightBarButtonItem;
+                    [UIApplication.sharedApplication sendAction:done.action to:done.target from:done forEvent:nil];
+                    after(0.8, ^{
+                        checkHost();
+                        check(!coordinates.isFirstResponder && hostRoot.presentedViewController==nil,@"closing form ends editing and restores app content");
+                        check(button(nil,@"bld.openControls") && !button(nil,@"bld.openControls").hidden,@"debug button returns after dismissal");
+                        // Leave a native number pad open for the regression screenshot.
+                        [nativeAge becomeFirstResponder];
+                        after(0.8, ^{
+                            check(!button(nil,@"bld.dismissAppKeyboard").hidden,@"native keyboard close control returns outside settings");
+                            result(@"passed",@"native number pad dismissal, unchanged age/continue flow, all settings keyboard controls, validation, sticky actions and original window verified");
+                        });
+                    });
+                });
+            }];
+        });
+    });
+}
+static void runChecks(void) {
+    checkHost();
+    NSUInteger visible=0;
+    for (UIWindow *window in hostWindow.windowScene.windows) if (!window.hidden && window.alpha>0 && window.rootViewController) visible++;
+    check(visible==1,@"debug controls create no extra application window");
+    check(button(nil,@"bld.openControls").window==hostWindow,@"controls attach to original app window");
+    UIButton *floating=button(nil,@"bld.openControls");
+    check(CGRectGetMinY(floating.frame)>=hostWindow.safeAreaInsets.top+88,@"default debug button leaves native top navigation clear");
+    CGFloat initialX=floating.center.x;
+    NSArray<UIAccessibilityCustomAction *> *moves=floating.accessibilityCustomActions;
+    check(moves.count==2 && moves[0].actionHandler && moves[1].actionHandler,@"button movement is accessible without dragging");
+    check(moves[0].actionHandler(moves[0]) && floating.center.x<initialX,@"floating controls can move away from native buttons");
+    check(moves[1].actionHandler(moves[1]) && fabs(floating.center.x-initialX)<1,@"floating controls can return to the right");
+    checkHost();
+    check(nativeAge.inputAccessoryView==nil,@"native age input starts with unmodified number pad");
+    [nativeAge becomeFirstResponder];
+    after(0.8, ^{
+        UIButton *dismiss=button(nil,@"bld.dismissAppKeyboard");
+        check(nativeAge.isFirstResponder && dismiss && !dismiss.hidden,@"native age screen exposes an explicit keyboard close control");
+        check(nativeAge.inputAccessoryView==nil && nativeAge.keyboardType==UIKeyboardTypeNumberPad,@"helper does not replace native keyboard or accessory");
+        [dismiss sendActionsForControlEvents:UIControlEventTouchUpInside];
+        after(0.5, ^{
+            check(!nativeAge.isFirstResponder && nativeEnds>=1,@"native keyboard closes through original editing-end delegate");
+            check([nativeAge.text isEqualToString:@"24"],@"native age value is preserved");
+            check(nativeContinues==0,@"keyboard close does not bypass onboarding");
+            check(dismiss.hidden,@"keyboard close control hides when no keyboard remains");
+            [nativeContinue sendActionsForControlEvents:UIControlEventTouchUpInside];
+            check(nativeContinues==1,@"original continue action remains usable after dismissal");
+            openDebugChecks();
         });
     });
 }
 
-@interface BLDTestRoot : UIViewController
+@interface BLDTestRoot : UIViewController <UITextFieldDelegate>
 @end
 @implementation BLDTestRoot
 - (void)viewDidLoad {
@@ -109,7 +207,18 @@ static void runChecks(void) {
     label.numberOfLines=0;label.textAlignment=NSTextAlignmentCenter;label.font=[UIFont boldSystemFontOfSize:28];
     label.autoresizingMask=UIViewAutoresizingFlexibleWidth;
     [self.view addSubview:label];
+    nativeAge=[[UITextField alloc] initWithFrame:CGRectMake(20,110,140,70)];
+    nativeAge.keyboardType=UIKeyboardTypeNumberPad;nativeAge.text=@"24";nativeAge.font=[UIFont systemFontOfSize:40];nativeAge.delegate=self;
+    [self.view addSubview:nativeAge];
+    nativeContinue=[UIButton buttonWithType:UIButtonTypeSystem];
+    [nativeContinue setTitle:@"Continue onboarding" forState:UIControlStateNormal];
+    nativeContinue.translatesAutoresizingMaskIntoConstraints=NO;
+    [nativeContinue addTarget:self action:@selector(continueOnboarding) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:nativeContinue];
+    [NSLayoutConstraint activateConstraints:@[[nativeContinue.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:20],[nativeContinue.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-20],[nativeContinue.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-16],[nativeContinue.heightAnchor constraintEqualToConstant:48]]];
 }
+- (void)textFieldDidEndEditing:(UITextField *)textField { (void)textField;nativeEnds++; }
+- (void)continueOnboarding { nativeContinues++; }
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     if (!scheduled) { scheduled=YES; after(2, ^{ runChecks(); }); }
