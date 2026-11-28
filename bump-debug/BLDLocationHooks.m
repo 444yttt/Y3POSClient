@@ -146,12 +146,14 @@ static void BLDReceivedLocations(id delegate, SEL selector, CLLocationManager *m
         }
     }
     if (changed) {
+        BOOL current;
         @synchronized(controller) {
-            if (!controller->enabled || controller->generation != generation) {
-                BLDOriginalCallbacks[index](delegate, selector, manager, locations);
-                return;
-            }
-            controller->injected += locations.count;
+            current = controller->enabled && controller->generation == generation;
+            if (current) controller->injected += locations.count;
+        }
+        if (!current) {
+            BLDOriginalCallbacks[index](delegate, selector, manager, locations);
+            return;
         }
         if (manager.delegate == delegate) {
             BLDManagerState *state = BLDState(manager, YES);
