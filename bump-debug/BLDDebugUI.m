@@ -22,8 +22,22 @@ static void BLDAppendNativeControls(UIView *view, UIWindow *window, NSMutableArr
     }
     for (UIView *child in view.subviews) BLDAppendNativeControls(child,window,lines,visited,recorded);
 }
+// Scope automatic dismissal to the age screen in the pinned Bump build.
+// Other number pads (phone, verification code, debug inputs) retain their behavior.
+static BOOL BLDIsNativeAgeField(UITextField *field) {
+    if (!field || field.secureTextEntry || [field.accessibilityIdentifier hasPrefix:@"bld."]) return NO;
+    Class ageClass=NSClassFromString(@"_TtC13OnboardingAPI7AgeView");
+    if (!ageClass) return NO;
+    if ([field.delegate isKindOfClass:ageClass]) return YES;
+    for (UIView *view=field.superview;view;view=view.superview) if ([view isKindOfClass:ageClass]) return YES;
+    return NO;
+}
+static BOOL BLDCompleteAgeText(NSString *text) {
+    if (text.length<2 || text.length>3) return NO;
+    return [text rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"0123456789"] invertedSet]].location==NSNotFound;
+}
 static NSString *BLDScreenDiagnostics(void) {
-    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithObject:@"UI: existing-app-window/v2-keyboard"];
+    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithObject:@"UI: existing-app-window/v3-age-keyboard"];
     [lines addObject:[NSString stringWithFormat:@"appState=%ld keyboardVisible=%d lastKeyboard=%@", (long)UIApplication.sharedApplication.applicationState, BLDKeyboardVisible, NSStringFromCGRect(BLDLastKeyboardFrame)]];
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
         if (![scene isKindOfClass:UIWindowScene.class]) continue;
@@ -385,6 +399,7 @@ static BOOL BLDParseNumber(NSString *text, double *value) {
 @property(nonatomic, strong) UIButton *debugButton;
 @property(nonatomic, strong) UIButton *appKeyboardButton;
 @property(nonatomic) BOOL appKeyboardVisible;
+@property(nonatomic) NSUInteger ageEditingGeneration;
 @property(nonatomic, strong) NSArray<NSLayoutConstraint *> *buttonConstraints;
 @property(nonatomic, strong) NSLayoutConstraint *buttonTop;
 @property(nonatomic, strong) NSLayoutConstraint *buttonTrailing;
@@ -411,6 +426,9 @@ static BOOL BLDParseNumber(NSString *text, double *value) {
         }
         for (NSString *name in @[UIKeyboardWillShowNotification,UIKeyboardWillHideNotification]) {
             [center addObserver:self selector:@selector(appKeyboardChanged:) name:name object:nil];
+        }
+        for (NSString *name in @[UITextFieldTextDidBeginEditingNotification,UITextFieldTextDidChangeNotification,UITextFieldTextDidEndEditingNotification]) {
+            [center addObserver:self selector:@selector(nativeAgeEdited:) name:name object:nil];
         }
         _timer = [NSTimer timerWithTimeInterval:1 target:self selector:@selector(tick:) userInfo:nil repeats:YES];
         [NSRunLoop.mainRunLoop addTimer:_timer forMode:NSRunLoopCommonModes];
@@ -455,6 +473,26 @@ static BOOL BLDParseNumber(NSString *text, double *value) {
         BLDKeyboardVisible = self.appKeyboardVisible;
         if (self.appKeyboardVisible) BLDLastKeyboardFrame = [note.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
         [self refresh];
+    });
+}
+- (void)nativeAgeEdited:(NSNotification *)note {
+    if (![note.object isKindOfClass:UITextField.class]) return;
+    UITextField *field=(UITextField *)note.object;
+    // Invalidate pending work even when focus moves to a different editor.
+    NSUInteger generation=++self.ageEditingGeneration;
+    if (self.navigation || !field.isFirstResponder || field.window!=self.window ||
+        !BLDIsNativeAgeField(field) || !BLDCompleteAgeText(field.text) || field.markedTextRange) return;
+    NSString *text=[field.text copy];
+    __weak UITextField *weakField=field;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.9*NSEC_PER_SEC)),dispatch_get_main_queue(), ^{
+        UITextField *current=weakField;
+        if (self.ageEditingGeneration!=generation || self.navigation ||
+            UIApplication.sharedApplication.applicationState!=UIApplicationStateActive ||
+            !current.isFirstResponder || current.window!=self.window ||
+            !BLDIsNativeAgeField(current) || ![current.text isEqualToString:text] || current.markedTextRange) return;
+        // Preserve the value, native delegate, editing-ended event and age validation.
+        // Only dismiss; the user still presses Bump's original next button.
+        [self dismissAppKeyboard];
     });
 }
 - (void)dismissAppKeyboard {

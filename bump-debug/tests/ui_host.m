@@ -2,6 +2,7 @@
 #import "../BLDState.h"
 #import <math.h>
 #import <stdlib.h>
+#import <objc/runtime.h>
 
 static BOOL enabled;
 static NSUInteger starts, stops, checks;
@@ -86,7 +87,7 @@ static void openDebugChecks(void) {
         [toggle sendActionsForControlEvents:UIControlEventTouchUpInside];
         check(!copy.hidden,@"diagnostics can be expanded");
         [copy sendActionsForControlEvents:UIControlEventTouchUpInside];
-        check([UIPasteboard.generalPasteboard.string containsString:@"existing-app-window/v2-keyboard"],@"diagnostic copy identifies keyboard revision");
+        check([UIPasteboard.generalPasteboard.string containsString:@"existing-app-window/v3-age-keyboard"],@"diagnostic copy identifies keyboard revision");
         [toggle sendActionsForControlEvents:UIControlEventTouchUpInside];
         UITextView *coordinates=(UITextView *)find(form.view,^BOOL(UIView *v){return [v.accessibilityIdentifier isEqualToString:@"bld.coordinates"];});
         UITextField *speed=(UITextField *)find(form.view,^BOOL(UIView *v){return [v.accessibilityIdentifier isEqualToString:@"bld.speed"];});
@@ -153,14 +154,51 @@ static void openDebugChecks(void) {
                         check(!coordinates.isFirstResponder && hostRoot.presentedViewController==nil,@"closing form ends editing and restores app content");
                         check(button(nil,@"bld.openControls") && !button(nil,@"bld.openControls").hidden,@"debug button returns after dismissal");
                         // Leave a native number pad open for the regression screenshot.
+                        nativeAge.text=@"2";
                         [nativeAge becomeFirstResponder];
                         after(0.8, ^{
                             check(!button(nil,@"bld.dismissAppKeyboard").hidden,@"native keyboard close control returns outside settings");
-                            result(@"passed",@"native number pad dismissal, unchanged age/continue flow, all settings keyboard controls, validation, sticky actions and original window verified");
+                            result(@"passed",@"automatic native age number pad dismissal, unchanged age/continue flow, all settings keyboard controls, validation, sticky actions and original window verified");
                         });
                     });
                 });
             }];
+        });
+    });
+}
+static void nativeAutoDismissChecks(void) {
+    nativeAge.text=@"2";
+    [nativeAge becomeFirstResponder];
+    [NSNotificationCenter.defaultCenter postNotificationName:UITextFieldTextDidChangeNotification object:nativeAge];
+    after(1.15, ^{
+        check(nativeAge.isFirstResponder,@"incomplete one-digit age is not dismissed automatically");
+        nativeAge.text=@"24";
+        [NSNotificationCenter.defaultCenter postNotificationName:UITextFieldTextDidChangeNotification object:nativeAge];
+        after(0.3, ^{
+            check(nativeAge.isFirstResponder,@"age keyboard stays open during the typing pause");
+            nativeAge.text=@"25";
+            [NSNotificationCenter.defaultCenter postNotificationName:UITextFieldTextDidChangeNotification object:nativeAge];
+            after(0.7, ^{
+                check(nativeAge.isFirstResponder,@"further typing cancels the previous pending dismissal");
+                after(0.65, ^{
+                    check(!nativeAge.isFirstResponder && nativeEnds>=2,@"settled native age automatically dismisses through editing-end delegate");
+                    check([nativeAge.text isEqualToString:@"25"],@"automatic dismissal preserves the entered age");
+                    check(nativeContinues==1,@"automatic dismissal never submits or skips age verification");
+                    [nativeContinue sendActionsForControlEvents:UIControlEventTouchUpInside];
+                    check(nativeContinues==2,@"original next button remains usable after automatic dismissal");
+                    // A different screen's number pad must never auto-dismiss.
+                    UIView *ageContainer=nativeAge.superview;
+                    [hostRoot.view addSubview:nativeAge];
+                    [nativeAge becomeFirstResponder];
+                    [NSNotificationCenter.defaultCenter postNotificationName:UITextFieldTextDidChangeNotification object:nativeAge];
+                    after(1.2, ^{
+                        check(nativeAge.isFirstResponder,@"unrelated native number pad is not dismissed");
+                        [hostWindow endEditing:YES];
+                        [ageContainer addSubview:nativeAge];
+                        openDebugChecks();
+                    });
+                });
+            });
         });
     });
 }
@@ -192,7 +230,7 @@ static void runChecks(void) {
             check(dismiss.hidden,@"keyboard close control hides when no keyboard remains");
             [nativeContinue sendActionsForControlEvents:UIControlEventTouchUpInside];
             check(nativeContinues==1,@"original continue action remains usable after dismissal");
-            openDebugChecks();
+            nativeAutoDismissChecks();
         });
     });
 }
@@ -209,7 +247,13 @@ static void runChecks(void) {
     [self.view addSubview:label];
     nativeAge=[[UITextField alloc] initWithFrame:CGRectMake(20,110,140,70)];
     nativeAge.keyboardType=UIKeyboardTypeNumberPad;nativeAge.text=@"24";nativeAge.font=[UIFont systemFontOfSize:40];nativeAge.delegate=self;
-    [self.view addSubview:nativeAge];
+    // Use the exact pinned runtime class name only inside this test host.
+    Class ageClass=objc_allocateClassPair(UIView.class,"_TtC13OnboardingAPI7AgeView",0);
+    objc_registerClassPair(ageClass);
+    UIView *ageContainer=[[ageClass alloc] initWithFrame:self.view.bounds];
+    ageContainer.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+    [self.view addSubview:ageContainer];
+    [ageContainer addSubview:nativeAge];
     nativeContinue=[UIButton buttonWithType:UIButtonTypeSystem];
     [nativeContinue setTitle:@"Continue onboarding" forState:UIControlStateNormal];
     nativeContinue.translatesAutoresizingMaskIntoConstraints=NO;
