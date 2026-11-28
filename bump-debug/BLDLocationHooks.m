@@ -259,21 +259,49 @@ static void (*BLDOriginalSignificantStart)(id, SEL);
 static void (*BLDOriginalSignificantStop)(id, SEL);
 static void (*BLDOriginalRequest)(id, SEL);
 static CLLocation *(*BLDOriginalLocation)(id, SEL);
-#ifndef BLD_TEST_HOST
-static NSURL *(*BLDOriginalGroupContainer)(id, SEL, NSString *);
+BOOL BLDIsSupportedBundleInfo(NSDictionary *info) {
+    NSString *identifier = info[@"CFBundleIdentifier"];
+    if (![identifier isKindOfClass:NSString.class]) return NO;
+    BOOL allowed = [identifier isEqualToString:@"co.amo.ios.location"] ||
+                   [identifier isEqualToString:@"com.ayato.bumpdebug"];
+    NSString *prefix = @"com.ayato.bumpdebug.";
+    if ([identifier hasPrefix:prefix]) {
+        NSString *suffix = [identifier substringFromIndex:prefix.length];
+        NSCharacterSet *teamCharacters = [NSCharacterSet characterSetWithCharactersInString:@"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"];
+        allowed = suffix.length == 10 && [suffix rangeOfCharacterFromSet:teamCharacters.invertedSet].location == NSNotFound;
+    }
+    return allowed && [info[@"CFBundleShortVersionString"] isEqualToString:@"2.135.0"] &&
+        [info[@"CFBundleVersion"] isEqualToString:@"261126153935"] &&
+        [info[@"CFBundleExecutable"] isEqualToString:@"Location"];
+}
 
-static NSURL *BLDGroupContainer(id manager, SEL selector, NSString *group) {
-    NSURL *original = BLDOriginalGroupContainer(manager, selector, group);
+NSURL *BLDResolveGroupContainer(NSFileManager *files, NSURL *original, NSString *group) {
     if (original || ![group isEqualToString:@"group.co.amo"]) return original;
-    // A different team's profile cannot grant the original developer's group.
-    // Use only this app's own sandbox; this does not share extension containers.
-    NSFileManager *files = manager;
+    // The original App Group is unavailable after signing with another team.
+    // This fallback is app-private and does not share extension containers.
     NSURL *support = [files URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject;
     if (!support) return nil;
     NSURL *fallback = [support URLByAppendingPathComponent:@"BumpLocationDebug/GroupContainer" isDirectory:YES];
     NSError *error = nil;
     if (![files createDirectoryAtURL:fallback withIntermediateDirectories:YES attributes:nil error:&error]) return nil;
     return fallback;
+}
+
+#ifndef BLD_TEST_HOST
+static NSURL *(*BLDOriginalGroupContainer)(id, SEL, NSString *);
+static NSURL *BLDGroupContainer(id files, SEL selector, NSString *group) {
+    NSURL *original = BLDOriginalGroupContainer(files, selector, group);
+    return BLDResolveGroupContainer(files, original, group);
+}
+static BOOL BLDInstallContainerFallback(void) {
+    if (BLDOriginalGroupContainer) return YES;
+    Method method = class_getInstanceMethod(NSFileManager.class, @selector(containerURLForSecurityApplicationGroupIdentifier:));
+    if (!method) return NO;
+    NSMethodSignature *signature = [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)];
+    if (signature.numberOfArguments != 3 || signature.methodReturnType[0] != '@' ||
+        [signature getArgumentTypeAtIndex:2][0] != '@') return NO;
+    BLDOriginalGroupContainer = (void *)method_setImplementation(method, (IMP)BLDGroupContainer);
+    return YES;
 }
 #endif
 
@@ -345,12 +373,9 @@ static IMP BLDReplaceManagerMethod(SEL selector, IMP replacement) {
 BOOL BLDInstallHooks(void) {
     if (BLDInstalledCount == 2) return YES;
 #ifndef BLD_TEST_HOST
-    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
-    NSString *identifier = info[@"CFBundleIdentifier"];
-    if (!([identifier isEqualToString:@"co.amo.ios.location"] || [identifier isEqualToString:@"com.ayato.bumpdebug"]) ||
-        ![info[@"CFBundleShortVersionString"] isEqualToString:@"2.135.0"] ||
-        ![info[@"CFBundleVersion"] isEqualToString:@"261126153935"] ||
-        ![info[@"CFBundleExecutable"] isEqualToString:@"Location"]) return NO;
+    if (!BLDIsSupportedBundleInfo(NSBundle.mainBundle.infoDictionary)) return NO;
+    // Startup storage must work even if location classes are not yet ready.
+    if (!BLDInstallContainerFallback()) return NO;
 #endif
     SEL callback = @selector(locationManager:didUpdateLocations:);
     Method methods[2];
@@ -374,14 +399,7 @@ BOOL BLDInstallHooks(void) {
         !BLDManagerMethodCompatible(@selector(stopMonitoringSignificantLocationChanges), @encode(void), 2) ||
         !BLDManagerMethodCompatible(@selector(requestLocation), @encode(void), 2) ||
         !BLDManagerMethodCompatible(@selector(location), @encode(id), 2)) return NO;
-#ifndef BLD_TEST_HOST
-    Method groupMethod = class_getInstanceMethod(NSFileManager.class, @selector(containerURLForSecurityApplicationGroupIdentifier:));
-    if (!groupMethod) return NO;
-    NSMethodSignature *groupSignature = [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(groupMethod)];
-    if (groupSignature.numberOfArguments != 3 || !BLDIsObjectArgument(groupSignature.methodReturnType) ||
-        !BLDIsObjectArgument([groupSignature getArgumentTypeAtIndex:2])) return NO;
-    BLDOriginalGroupContainer = (void *)method_setImplementation(groupMethod, (IMP)BLDGroupContainer);
-#endif
+
     for (NSUInteger i = 0; i < 2; i++) {
         BLDDelegateClasses[i] = classes[i];
         BLDOriginalCallbacks[i] = (BLDLocationCallback)method_setImplementation(methods[i], (IMP)BLDReceivedLocations);
