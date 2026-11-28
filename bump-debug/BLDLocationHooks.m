@@ -5,6 +5,10 @@
 #import <math.h>
 #import <string.h>
 #import <stdlib.h>
+#ifndef BLD_TEST_HOST
+#import <mach-o/dyld.h>
+#import <mach-o/loader.h>
+#endif
 
 // Names and Objective-C signatures are pinned to the supplied 2.135.0 binary.
 static const char *BLDDelegateNames[] = {
@@ -319,6 +323,28 @@ BOOL BLDIsSupportedBundleInfo(NSDictionary *info) {
         [info[@"CFBundleExecutable"] isEqualToString:@"Location"];
 }
 
+// GalaxyGateAPI/GalaxyApps.swift:75 identifies the app by the first URL
+// scheme, not its signed bundle ID. Re-signing installers may remove/rename
+// schemes. Repair only the dictionary read by this pinned AppInfo initializer;
+// leave the real plist, bundle identity, URL registration and other callers alone.
+NSDictionary *BLDAppInfoDictionary(NSDictionary *original, BOOL isMainBundle, NSUInteger callerOffset) {
+    if (!isMainBundle || callerOffset!=0x25a40 || !BLDIsSupportedBundleInfo(original)) return original;
+    id rawTypes=original[@"CFBundleURLTypes"];
+    NSArray *types=[rawTypes isKindOfClass:NSArray.class] ? rawTypes : @[];
+    id rawFirst=types.firstObject;
+    NSDictionary *first=[rawFirst isKindOfClass:NSDictionary.class] ? rawFirst : @{};
+    id rawSchemes=first[@"CFBundleURLSchemes"];
+    NSArray *schemes=[rawSchemes isKindOfClass:NSArray.class] ? rawSchemes : @[];
+    if ([schemes.firstObject isEqual:@"amolocation"]) return original;
+    NSMutableArray *canonical=[NSMutableArray arrayWithObject:@"amolocation"];
+    for (id scheme in schemes) if ([scheme isKindOfClass:NSString.class] && ![scheme isEqual:@"amolocation"]) [canonical addObject:scheme];
+    NSMutableDictionary *entry=[first mutableCopy];entry[@"CFBundleURLSchemes"]=canonical;
+    NSMutableArray *newTypes=[types mutableCopy];
+    if (newTypes.count) newTypes[0]=entry; else [newTypes addObject:entry];
+    NSMutableDictionary *result=[original mutableCopy];result[@"CFBundleURLTypes"]=newTypes;
+    return result;
+}
+
 NSURL *BLDResolveGroupContainer(NSFileManager *files, NSURL *original, NSString *group) {
     if (original || ![group isEqualToString:@"group.co.amo"]) return original;
     // The original App Group is unavailable after signing with another team.
@@ -332,6 +358,42 @@ NSURL *BLDResolveGroupContainer(NSFileManager *files, NSURL *original, NSString 
 }
 
 #ifndef BLD_TEST_HOST
+static NSDictionary *(*BLDOriginalInfoDictionary)(id,SEL);
+static uintptr_t BLDMainImageBase;
+static NSDictionary *BLDNativeAppInfoDictionary(id bundle,SEL selector) {
+    uintptr_t caller=(uintptr_t)__builtin_extract_return_addr(__builtin_return_address(0));
+    NSDictionary *original=BLDOriginalInfoDictionary(bundle,selector);
+    NSUInteger offset=caller>=BLDMainImageBase ? caller-BLDMainImageBase : NSUIntegerMax;
+    return BLDAppInfoDictionary(original,bundle==NSBundle.mainBundle,offset);
+}
+static BOOL BLDInstallAppInfoCompatibility(void) {
+    if (BLDOriginalInfoDictionary) return YES;
+    const struct mach_header_64 *header=(const struct mach_header_64 *)_dyld_get_image_header(0);
+    if (!header || header->magic!=MH_MAGIC_64 || header->ncmds>4096 || header->sizeofcmds>0x20000) return NO;
+    const uint8_t expectedUUID[16]={0xea,0x36,0x12,0x27,0x6e,0xe1,0x39,0x79,0xb8,0xdf,0x24,0x2f,0x24,0xfe,0x47,0xdc};
+    BOOL matches=NO;
+    const uint8_t *start=(const uint8_t *)(header+1),*cursor=start,*end=start+header->sizeofcmds;
+    for (uint32_t i=0;i<header->ncmds;i++) {
+        if ((NSUInteger)(end-cursor)<sizeof(struct load_command)) return NO;
+        const struct load_command *command=(const struct load_command *)cursor;
+        if (command->cmdsize<sizeof(*command) || command->cmdsize>(NSUInteger)(end-cursor)) return NO;
+        if (command->cmd==LC_UUID && command->cmdsize>=sizeof(struct uuid_command))
+            matches=memcmp(((const struct uuid_command *)command)->uuid,expectedUUID,16)==0;
+        cursor+=command->cmdsize;
+    }
+    const uint8_t expectedCall[4]={0x71,0xd5,0x84,0x95};
+    if (!matches || memcmp((const uint8_t *)header+0x25a3c,expectedCall,4)) return NO;
+    Class cls=object_getClass(NSBundle.mainBundle);
+    Method method=class_getInstanceMethod(cls,@selector(infoDictionary));
+    if (!method) return NO;
+    NSMethodSignature *signature=[NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)];
+    if (signature.numberOfArguments!=2 || signature.methodReturnType[0]!='@') return NO;
+    BLDMainImageBase=(uintptr_t)header;
+    BLDOriginalInfoDictionary=(void *)method_getImplementation(method);
+    if (!class_addMethod(cls,@selector(infoDictionary),(IMP)BLDNativeAppInfoDictionary,method_getTypeEncoding(method)))
+        method_setImplementation(method,(IMP)BLDNativeAppInfoDictionary);
+    return YES;
+}
 static NSURL *(*BLDOriginalGroupContainer)(id, SEL, NSString *);
 static NSURL *BLDGroupContainer(id files, SEL selector, NSString *group) {
     NSURL *original = BLDOriginalGroupContainer(files, selector, group);
@@ -427,7 +489,7 @@ BOOL BLDInstallHooks(void) {
     if (BLDInstalledCount == 2) return YES;
 #ifndef BLD_TEST_HOST
     if (!BLDIsSupportedBundleInfo(NSBundle.mainBundle.infoDictionary)) return NO;
-    if (!BLDInstallContainerFallback()) return NO;
+    if (!BLDInstallAppInfoCompatibility() || !BLDInstallContainerFallback()) return NO;
 #endif
     SEL callback = @selector(locationManager:didUpdateLocations:);
     Method methods[2];
