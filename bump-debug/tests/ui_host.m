@@ -217,11 +217,16 @@ static void runChecks(void) {
     check(moves[1].actionHandler(moves[1]) && fabs(floating.center.x-initialX)<1,@"floating controls can return to the right");
     checkHost();
     check(nativeAge.inputAccessoryView==nil,@"native age input starts with unmodified number pad");
+    // Keep this manual-close test incomplete so automatic age dismissal cannot
+    // legitimately win the race while a cold simulator brings up its keyboard.
+    nativeAge.text=@"2";
     [nativeAge becomeFirstResponder];
     after(0.8, ^{
         UIButton *dismiss=button(nil,@"bld.dismissAppKeyboard");
         check(nativeAge.isFirstResponder && dismiss && !dismiss.hidden,@"native age screen exposes an explicit keyboard close control");
         check(nativeAge.inputAccessoryView==nil && nativeAge.keyboardType==UIKeyboardTypeNumberPad,@"helper does not replace native keyboard or accessory");
+        nativeAge.text=@"24";
+        [NSNotificationCenter.defaultCenter postNotificationName:UITextFieldTextDidChangeNotification object:nativeAge];
         [dismiss sendActionsForControlEvents:UIControlEventTouchUpInside];
         after(0.5, ^{
             check(!nativeAge.isFirstResponder && nativeEnds>=1,@"native keyboard closes through original editing-end delegate");
