@@ -35,8 +35,6 @@ assert choices,'No supported iPhone simulator type'
 PY
 device_id="$(xcrun simctl create BumpUIRegression "$(cat "$test_dir/type")" "$(cat "$test_dir/runtime")")"
 defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool NO
-xcrun simctl boot "$device_id"
-xcrun simctl bootstatus "$device_id" -b
 app="$test_dir/BLDUIHost.app"
 mkdir -p "$app"
 python3 - "$app/Info.plist" <<'PY'
@@ -46,9 +44,11 @@ with open(sys.argv[1],'wb') as f:plistlib.dump(p,f)
 PY
 sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 xcrun --sdk iphonesimulator clang -target "$(uname -m)-apple-ios16.0-simulator" -isysroot "$sdk" \
-  -fobjc-arc -fmodules -O1 -Wall -Wextra -Werror -framework UIKit -framework Foundation \
-  "$project_dir/BLDDebugUI.m" "$project_dir/tests/ui_host.m" -o "$app/BLDUIHost"
+  -fobjc-arc -fmodules -O1 -Wall -Wextra -Werror -framework UIKit -framework Foundation -framework UniformTypeIdentifiers \
+  "$project_dir/BLDDebugUI.m" "$project_dir/BLDLibrary.m" "$project_dir/tests/ui_host.m" -o "$app/BLDUIHost"
 codesign --force --sign - --timestamp=none "$app"
+xcrun simctl boot "$device_id"
+xcrun simctl bootstatus "$device_id" -b
 xcrun simctl install "$device_id" "$app"
 xcrun simctl launch "$device_id" com.ayato.bumpdebug.uitests
 container="$(xcrun simctl get_app_container "$device_id" com.ayato.bumpdebug.uitests data)"

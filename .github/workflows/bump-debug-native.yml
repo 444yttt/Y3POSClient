@@ -30,10 +30,12 @@ jobs:
         run: python3 -m unittest discover -s tests -v
       - name: Exercise callback injection and restoration
         run: bash scripts/test-hooks-macos.sh
-      - name: Exercise UIKit controls without taking over app windows
-        run: bash scripts/test-ui-simulator.sh
+      - name: Exercise local library and file parsers
+        run: bash scripts/test-library-macos.sh
       - name: Build ARM64 iOS library
         run: bash scripts/ci-native.sh
+      - name: Exercise UIKit controls without taking over app windows
+        run: bash scripts/test-ui-simulator.sh
       - if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -42,6 +44,7 @@ jobs:
             bump-debug/output/BumpLocationDebug.dylib
             bump-debug/output/SHA256SUMS
             bump-debug/output/hook-tests.json
+            bump-debug/output/library-tests.json
             bump-debug/output/ui-tests.json
             bump-debug/output/ui-host.png
           retention-days: 7

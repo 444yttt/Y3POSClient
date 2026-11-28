@@ -1,0 +1,73 @@
+#import <Foundation/Foundation.h>
+#import "../BLDLibrary.h"
+static NSUInteger checks;
+#define REQUIRE(v,m) do{checks++;if(!(v)){fprintf(stderr,"Library check failed: %s\n",m);exit(1);}}while(0)
+static NSData *bytes(NSString *text){return [text dataUsingEncoding:NSUTF8StringEncoding];}
+int main(void){@autoreleasepool{
+    NSError *error=nil;NSArray *points=BLDParseCoordinates(@"\ufeff35.1,139.2\r\n\n-10 20\n",256,&error);
+    REQUIRE(points.count==2 && !error,"BOM whitespace and CRLF parsing");
+    REQUIRE([points[1][0] doubleValue]==-10,"negative latitude preserved");
+    REQUIRE(BLDParseCoordinates(@"name,longitude,latitude\n\"test\",2.301152,48.868293",256,&error).count==1,"CSV named columns reorder longitude and latitude");
+    REQUIRE(BLDParseCoordinates(@"lat,lon,name\n35,139,Tokyo",256,&error).count==1,"extra CSV columns allowed only with named coordinates");
+    REQUIRE(!BLDParseCoordinates(@"35,139\n999,0",256,&error),"invalid later row rejects entire input");
+    REQUIRE(!BLDParseCoordinates(@"nan,139",256,&error),"NaN rejected");
+    REQUIRE(!BLDParseCoordinates(@"35,139,x",256,&error),"ambiguous numeric text rejected");
+    NSMutableString *many=[NSMutableString string];for(NSUInteger i=0;i<257;i++)[many appendString:@"35,139\n"];
+    REQUIRE(!BLDParseCoordinates(many,256,&error),"manual point limit rejects without truncation");
+    REQUIRE(BLDParseCoordinates(BLDCoordinateText(points),256,&error).count==2,"format roundtrip");
+    NSArray *imports=BLDImportCandidates(bytes(@"35,139\n36,140"),@"txt",&error);
+    REQUIRE(imports.count==1 && [imports[0][@"points"] count]==2,"TXT import preserves route order");
+    REQUIRE([BLDImportCandidates(bytes(many),@"csv",&error)[0][@"points"] count]==257,"import keeps oversized route for explicit UI rejection");
+    NSString *json=@"{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\",\"properties\":{\"name\":\"full\"},\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[2,48],[3,49]]}},{\"type\":\"Feature\",\"properties\":{\"name\":\"compact\"},\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[2.3,48.8],[2.4,48.9]]}}]}";
+    imports=BLDImportCandidates(bytes(json),@"geojson",&error);
+    REQUIRE(imports.count==2,"multiple GeoJSON routes remain selectable");
+    REQUIRE([imports[0][@"points"][0][0] doubleValue]==48 && [imports[0][@"points"][0][1] doubleValue]==2,"GeoJSON lonlat converted to UI latlon");
+    REQUIRE([imports[1][@"name"] isEqual:@"compact"],"GeoJSON route name retained");
+    REQUIRE(BLDImportCandidates(bytes(@"{\"type\":\"MultiLineString\",\"coordinates\":[[[2,48],[3,49]],[[4,50],[5,51]]]}"),@"json",&error).count==2,"disconnected GeoJSON paths not silently joined");
+    REQUIRE(!BLDImportCandidates(bytes(@"{\"type\":\"Point\",\"coordinates\":[2,99]}"),@"json",&error),"out of range GeoJSON rejected");
+    NSString *gpx=@"<?xml version=\"1.0\"?><gpx xmlns=\"http://www.topografix.com/GPX/1/1\"><trk><name>test track</name><trkseg><trkpt lat=\"48\" lon=\"2\"/><trkpt lat=\"49\" lon=\"3\"/></trkseg><trkseg><trkpt lat=\"50\" lon=\"4\"/></trkseg></trk></gpx>";
+    imports=BLDImportCandidates(bytes(gpx),@"gpx",&error);
+    REQUIRE(imports.count==2 && [imports[0][@"points"] count]==2,"GPX segments remain separate");
+    REQUIRE([imports[0][@"name"] isEqual:@"test track"],"GPX track name retained");
+    REQUIRE([BLDImportCandidates(bytes(@"<gpx><rte><name>route</name><rtept lat=\"35\" lon=\"139\"/></rte></gpx>"),@"gpx",&error)[0][@"points"] count]==1,"GPX route points supported");
+    REQUIRE([BLDImportCandidates(bytes(@"<gpx><wpt lat=\"35\" lon=\"139\"><name>place</name></wpt></gpx>"),@"gpx",&error)[0][@"name"] isEqual:@"place"],"GPX named waypoint supported");
+    REQUIRE(!BLDImportCandidates(bytes(@"<!DOCTYPE gpx [<!ENTITY x SYSTEM 'file:///etc/passwd'>]><gpx/>"),@"gpx",&error),"XML DTD rejected before parsing");
+    REQUIRE(!BLDImportCandidates(bytes(@"<gpx><trk><trkseg><trkpt lat=\"0\" lon=\"999\"/></trkseg></trk></gpx>"),@"gpx",&error),"invalid GPX rejected");
+    REQUIRE(!BLDImportCandidates(bytes(@"<gpx>"),@"gpx",&error),"malformed GPX rejected");
+    REQUIRE(!BLDImportCandidates([NSMutableData dataWithLength:2*1024*1024+1],@"txt",&error),"oversized import rejected");
+    REQUIRE(!BLDImportCandidates([NSData dataWithBytes:(uint8_t[]){0xff,0xfe,0xff} length:3],@"txt",&error),"non UTF8 input rejected");
+    NSURL *dir=[NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString] isDirectory:YES];
+    NSURL *file=[dir URLByAppendingPathComponent:@"library.json"];
+    BLDLibrary *store=[[BLDLibrary alloc] initWithURL:file];REQUIRE(!store.loadError,"new store starts empty");
+    NSDictionary *draft=@{@"coordinates":@"unfinished input",@"speed":@"1.4",@"accuracy":@"5",@"background":@NO};
+    REQUIRE([store saveDraft:draft error:&error],"unfinished draft saved without starting GPS");
+    REQUIRE([store addTo:@"routes" name:@"Paris" points:points speed:1.4 accuracy:5 error:&error],"named route saves");
+    REQUIRE([store addTo:@"places" name:@"Place" points:@[points[0]] speed:0 accuracy:5 error:&error],"named place saves");
+    REQUIRE(![store addTo:@"places" name:@"Bad" points:points speed:0 accuracy:5 error:&error],"place collection rejects multiple positions");
+    REQUIRE((![store addTo:@"routes" name:@"Bad" points:@[@[@999,@0]] speed:0 accuracy:5 error:&error]),"invalid route cannot enter store");
+    BLDLibrary *reopened=[[BLDLibrary alloc] initWithURL:file];NSDictionary *snapshot=[reopened snapshot];
+    REQUIRE([snapshot[@"draft"] isEqual:draft],"draft and background preference survive new instance");
+    REQUIRE([snapshot[@"routes"] count]==1 && [snapshot[@"places"] count]==1,"route and place survive new instance");
+    REQUIRE([snapshot[@"routes"][0][@"speed"] doubleValue]==1.4,"speed retained with route");
+    for(NSUInteger i=0;i<103;i++)REQUIRE(([store addTo:@"history" name:[NSString stringWithFormat:@"run%lu",(unsigned long)i] points:@[points[0]] speed:1 accuracy:5 error:&error]),"history append succeeds");
+    snapshot=[store snapshot];REQUIRE([snapshot[@"history"] count]==100,"history bounded at latest100");
+    REQUIRE([snapshot[@"history"][0][@"name"] isEqual:@"run102"],"history newest first");
+    NSString *identifier=snapshot[@"routes"][0][@"id"];
+    REQUIRE([store removeFrom:@"routes" identifier:identifier error:&error],"route deletion succeeds");
+    REQUIRE([[[BLDLibrary alloc] initWithURL:file] snapshot][@"routes"]!=nil,"reopen remains valid after deletion");
+    REQUIRE([[[[BLDLibrary alloc] initWithURL:file] snapshot] objectForKey:@"routes"]!=nil,"deleted collection remains represented");
+    REQUIRE([[store snapshot][@"routes"] count]==0,"deleted route absent");
+    NSURL *bad=[dir URLByAppendingPathComponent:@"bad.json"];NSData *badData=bytes(@"{broken");[badData writeToURL:bad atomically:YES];
+    BLDLibrary *broken=[[BLDLibrary alloc] initWithURL:bad];REQUIRE(broken.loadError!=nil,"corrupt store reports load error");
+    REQUIRE(![broken saveDraft:draft error:&error] && [[NSData dataWithContentsOfURL:bad] isEqual:badData],"corrupt store is never silently overwritten");
+    NSURL *wrong=[dir URLByAppendingPathComponent:@"wrong.json"];[@"{\"schema\":1,\"draft\":{\"coordinates\":123},\"routes\":[],\"places\":[],\"history\":[]}" writeToURL:wrong atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+    REQUIRE([[BLDLibrary alloc] initWithURL:wrong].loadError!=nil,"invalid draft types rejected before UI use");
+    NSURL *blocked=[dir URLByAppendingPathComponent:@"block"];[bytes(@"file") writeToURL:blocked atomically:YES];BLDLibrary *cannotWrite=[[BLDLibrary alloc] initWithURL:[blocked URLByAppendingPathComponent:@"library.json"]];
+    REQUIRE(![cannotWrite saveDraft:draft error:&error],"filesystem write failure reported");
+    REQUIRE([[cannotWrite snapshot][@"draft"] count]==0,"failed write does not mutate in-memory state");
+    NSURL *txt=[dir URLByAppendingPathComponent:@"input.txt"];[bytes(@"35,139") writeToURL:txt atomically:YES];REQUIRE([BLDReadImportURL(txt,&error) isEqual:bytes(@"35,139")],"bounded file reader retains exact input");
+    REQUIRE(!BLDReadImportURL([NSURL URLWithString:@"https://example.invalid/file"],&error),"file reader never fetches network URLs");
+    [NSFileManager.defaultManager removeItemAtURL:dir error:NULL];
+    NSData *result=[NSJSONSerialization dataWithJSONObject:@{@"status":@"passed",@"checks":@(checks),@"real_location_api_calls":@0,@"app_binary_executed":@NO} options:NSJSONWritingPrettyPrinted error:NULL];
+    fwrite(result.bytes,1,result.length,stdout);fputc('\n',stdout);return 0;
+}}

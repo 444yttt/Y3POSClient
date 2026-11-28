@@ -1,10 +1,19 @@
 #import <UIKit/UIKit.h>
 #import "../BLDState.h"
+#import "../BLDLibrary.h"
 #import <math.h>
 #import <stdlib.h>
 #import <objc/runtime.h>
 
 static BOOL enabled;
+static BOOL backgroundPreference=YES;
+void BLDSetBackgroundEnabled(BOOL value){backgroundPreference=value;}
+BOOL BLDBackgroundEnabled(void){return backgroundPreference;}
+@interface UIViewController (BLDTestLibraryActions)
+- (void)saveRouteNamed:(NSString *)name;
+- (void)loadRecord:(NSDictionary *)item;
+- (void)importURL:(NSURL *)url;
+@end
 static NSUInteger starts, stops, checks;
 static NSArray *lastPoints;
 static double lastSpeed,lastAccuracy;
@@ -72,6 +81,60 @@ static void useItem(UIBarButtonItem *item) {
     check(item != nil && item.enabled,@"keyboard toolbar action is available");
     [UIApplication.sharedApplication sendAction:item.action to:item.target from:item forEvent:nil];
 }
+static void waitFor(BOOL (^condition)(void),NSUInteger tries,dispatch_block_t completion) {
+    if(condition()){completion();return;}
+    check(tries>0,@"asynchronous file import finishes within deadline");
+    after(0.1,^{waitFor(condition,tries-1,completion);});
+}
+static void libraryChecks(UIViewController *form,dispatch_block_t completion) {
+    UITextView *coordinates=(UITextView *)find(form.view,^BOOL(UIView *v){return [v.accessibilityIdentifier isEqualToString:@"bld.coordinates"];});
+    NSString *initial=coordinates.text;
+    for(NSString *identifier in @[@"bld.saveRoute",@"bld.savePlace",@"bld.openLibrary",@"bld.importFile"])check(button(nil,identifier)!=nil,@"save/library/import controls exist");
+    UISwitch *background=(UISwitch *)find(form.view,^BOOL(UIView *v){return [v.accessibilityIdentifier isEqualToString:@"bld.backgroundEnabled"];});
+    check(background && background.on,@"background continuation has a visible default-on preference");
+    background.on=NO;[background sendActionsForControlEvents:UIControlEventValueChanged];
+    check(!BLDBackgroundEnabled() && ![[BLDLibrary.sharedLibrary snapshot][@"draft"][@"background"] boolValue],@"background preference changes and persists");
+    background.on=YES;[background sendActionsForControlEvents:UIControlEventValueChanged];
+    [form saveRouteNamed:@"Fixture route"];
+    NSDictionary *saved=[BLDLibrary.sharedLibrary snapshot][@"routes"][0];
+    check([saved[@"name"] isEqual:@"Fixture route"] && !enabled && starts==0,@"saving route persists without starting injection");
+    [button(nil,@"bld.openLibrary") sendActionsForControlEvents:UIControlEventTouchUpInside];
+    after(0.6,^{
+        UINavigationController *nav=form.navigationController;
+        UITableViewController *list=(UITableViewController *)nav.topViewController;
+        check([list isKindOfClass:UITableViewController.class] && [list.tableView numberOfRowsInSection:0]==1,@"saved routes appear in a browsable list");
+        [list.tableView.delegate tableView:list.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+        after(0.6,^{
+            check(nav.topViewController==form && !enabled && starts==0,@"selecting saved route returns to form without starting");
+            [button(nil,@"bld.savePlace") sendActionsForControlEvents:UIControlEventTouchUpInside];
+            after(0.5,^{
+                UIAlertController *name=(UIAlertController *)form.presentedViewController;
+                check([name isKindOfClass:UIAlertController.class] && name.textFields.count==1 && [name.title isEqual:@"地点"],@"save-place control requests a name");
+                [name dismissViewControllerAnimated:NO completion:^{
+                    [button(nil,@"bld.importFile") sendActionsForControlEvents:UIControlEventTouchUpInside];
+                    after(0.5,^{
+                        UIViewController *picker=form.presentedViewController;
+                        check([picker isKindOfClass:UIDocumentPickerViewController.class],@"file import opens the system document picker");
+                        [picker dismissViewControllerAnimated:NO completion:^{
+                            NSURL *url=[[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject URLByAppendingPathComponent:@"fixture-import.txt"];
+                            [@"48.868293,2.301152\n48.869000,2.302000" writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+                            [form importURL:url];
+                            waitFor(^BOOL{return [coordinates.text hasPrefix:@"48.868293"];},50,^{
+                                NSArray *imported=BLDParseCoordinates(coordinates.text,256,NULL);
+                                check(imported.count==2 && !enabled && starts==0,@"file import loads all points without starting injection");
+                                [form loadRecord:saved];
+                                check([BLDParseCoordinates(coordinates.text,256,NULL)[0][0] doubleValue]==35.681236,@"saved route can replace imported draft");
+                                coordinates.text=initial;
+                                [NSFileManager.defaultManager removeItemAtURL:url error:NULL];
+                                completion();
+                            });
+                        }];
+                    });
+                }];
+            });
+        });
+    });
+}
 static void openDebugChecks(void) {
     UIButton *open = button(nil,@"bld.openControls");
     [open sendActionsForControlEvents:UIControlEventTouchUpInside];
@@ -87,13 +150,14 @@ static void openDebugChecks(void) {
         [toggle sendActionsForControlEvents:UIControlEventTouchUpInside];
         check(!copy.hidden,@"diagnostics can be expanded");
         [copy sendActionsForControlEvents:UIControlEventTouchUpInside];
-        check([UIPasteboard.generalPasteboard.string containsString:@"existing-app-window/v3-age-keyboard"],@"diagnostic copy identifies keyboard revision");
+        check([UIPasteboard.generalPasteboard.string containsString:@"existing-app-window/v4-library"],@"diagnostic copy identifies keyboard revision");
         [toggle sendActionsForControlEvents:UIControlEventTouchUpInside];
         UITextView *coordinates=(UITextView *)find(form.view,^BOOL(UIView *v){return [v.accessibilityIdentifier isEqualToString:@"bld.coordinates"];});
         UITextField *speed=(UITextField *)find(form.view,^BOOL(UIView *v){return [v.accessibilityIdentifier isEqualToString:@"bld.speed"];});
         UITextField *accuracy=(UITextField *)find(form.view,^BOOL(UIView *v){return [v.accessibilityIdentifier isEqualToString:@"bld.accuracy"];});
         check(coordinates && speed && accuracy,@"all input fields are accessible");
         NSString *originalCoordinates=coordinates.text;
+        libraryChecks(form, ^{
         [coordinates becomeFirstResponder];
         after(0.8, ^{
             check(coordinates.isFirstResponder,@"coordinate editor accepts focus");
@@ -140,6 +204,7 @@ static void openDebugChecks(void) {
                     check(CGRectGetMaxY(frame)<=CGRectGetMinY(form.view.keyboardLayoutGuide.layoutFrame)+1,@"start action stays above keyboard");
                     [start sendActionsForControlEvents:UIControlEventTouchUpInside];
                     check(enabled && starts==1 && !coordinates.isFirstResponder,@"start works while keyboard is open and dismisses it");
+                    check([[BLDLibrary.sharedLibrary snapshot][@"history"] count]==1,@"successful start saves exactly one history entry");
                     check(lastPoints.count==1 && fabs([lastPoints[0][0] doubleValue]-35.681236)<0.000001 && fabs([lastPoints[0][1] doubleValue]-139.767125)<0.000001,@"coordinate data reaches feed unchanged");
                     check(fabs(lastSpeed-1.4)<0.001 && fabs(lastAccuracy-5)<0.001,@"numeric data reaches feed unchanged");
                     [accuracy becomeFirstResponder];
@@ -158,11 +223,12 @@ static void openDebugChecks(void) {
                         [nativeAge becomeFirstResponder];
                         after(0.8, ^{
                             check(!button(nil,@"bld.dismissAppKeyboard").hidden,@"native keyboard close control returns outside settings");
-                            result(@"passed",@"automatic native age number pad dismissal, unchanged age/continue flow, all settings keyboard controls, validation, sticky actions and original window verified");
+                            result(@"passed",@"native age keyboard, library save/load, document picker/import without auto-start, persisted preference, history, keyboard controls and original window verified");
                         });
                     });
                 });
             }];
+        });
         });
     });
 }

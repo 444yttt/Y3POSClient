@@ -1,4 +1,6 @@
 #import "BLDState.h"
+#import "BLDLibrary.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <UIKit/UIKit.h>
 #include <math.h>
 
@@ -37,7 +39,7 @@ static BOOL BLDCompleteAgeText(NSString *text) {
     return [text rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"0123456789"] invertedSet]].location==NSNotFound;
 }
 static NSString *BLDScreenDiagnostics(void) {
-    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithObject:@"UI: existing-app-window/v3-age-keyboard"];
+    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithObject:@"UI: existing-app-window/v4-library"];
     [lines addObject:[NSString stringWithFormat:@"appState=%ld keyboardVisible=%d lastKeyboard=%@", (long)UIApplication.sharedApplication.applicationState, BLDKeyboardVisible, NSStringFromCGRect(BLDLastKeyboardFrame)]];
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
         if (![scene isKindOfClass:UIWindowScene.class]) continue;
@@ -60,7 +62,51 @@ static NSString *BLDScreenDiagnostics(void) {
     return [lines componentsJoinedByString:@"\n"];
 }
 
-@interface BLDFormController : UIViewController <UITextFieldDelegate, UITextViewDelegate, UIGestureRecognizerDelegate>
+@interface BLDLibraryController : UITableViewController
+@property(nonatomic,strong) BLDLibrary *library;
+@property(nonatomic,strong) UISegmentedControl *category;
+@property(nonatomic,strong) NSArray<NSDictionary *> *items;
+@property(nonatomic,copy) void (^choose)(NSDictionary *);
+@end
+@implementation BLDLibraryController
+- (NSString *)collection { return @[@"routes",@"places",@"history"][(NSUInteger)self.category.selectedSegmentIndex]; }
+- (void)viewDidLoad {
+    [super viewDidLoad];self.title=@"保存と履歴";
+    self.category=[[UISegmentedControl alloc] initWithItems:@[@"経路",@"地点",@"開始履歴"]];
+    self.category.selectedSegmentIndex=0;self.category.accessibilityIdentifier=@"bld.library.category";
+    [self.category addTarget:self action:@selector(reloadLibrary) forControlEvents:UIControlEventValueChanged];
+    self.navigationItem.titleView=self.category;self.navigationItem.rightBarButtonItem=self.editButtonItem;
+    self.tableView.accessibilityIdentifier=@"bld.library.table";[self reloadLibrary];
+}
+- (void)reloadLibrary {
+    self.items=[self.library snapshot][[self collection]];[self.tableView reloadData];
+    UILabel *empty=[[UILabel alloc] init];empty.numberOfLines=0;empty.textAlignment=NSTextAlignmentCenter;empty.textColor=UIColor.secondaryLabelColor;
+    empty.text=self.library.loadError.localizedDescription?:@"まだ保存されていません。\n入力画面で保存、または開始すると履歴が残ります。";
+    self.tableView.backgroundView=self.items.count?nil:empty;
+}
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { (void)tableView;(void)section;return (NSInteger)self.items.count; }
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)path {
+    UITableViewCell *cell=[tableView dequeueReusableCellWithIdentifier:@"saved"];
+    if(!cell)cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"saved"];
+    NSDictionary *item=self.items[(NSUInteger)path.row];cell.textLabel.text=item[@"name"];
+    NSDateFormatter *format=[NSDateFormatter new];format.dateStyle=NSDateFormatterShortStyle;format.timeStyle=NSDateFormatterShortStyle;
+    NSUInteger count=[item[@"coordinates"] componentsSeparatedByString:@"\n"].count;
+    cell.detailTextLabel.text=[NSString stringWithFormat:@"%@ · %lu地点 · %@m/s · 精度%@m",[format stringFromDate:[NSDate dateWithTimeIntervalSince1970:[item[@"createdAt"] doubleValue]]],(unsigned long)count,item[@"speed"],item[@"accuracy"]];
+    cell.detailTextLabel.numberOfLines=2;cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;return cell;
+}
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path {
+    [tableView deselectRowAtIndexPath:path animated:YES];if(self.choose)self.choose(self.items[(NSUInteger)path.row]);[self.navigationController popViewControllerAnimated:YES];
+}
+- (NSString *)tableView:(UITableView *)tableView titleForDeleteConfirmationButtonForRowAtIndexPath:(NSIndexPath *)path { (void)tableView;(void)path;return @"削除"; }
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)style forRowAtIndexPath:(NSIndexPath *)path {
+    (void)tableView;if(style!=UITableViewCellEditingStyleDelete)return;NSError *error=nil;
+    if(![self.library removeFrom:[self collection] identifier:self.items[(NSUInteger)path.row][@"id"] error:&error]){
+        UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"削除できませんでした" message:error.localizedDescription preferredStyle:UIAlertControllerStyleAlert];[alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];[self presentViewController:alert animated:YES completion:nil];
+    }[self reloadLibrary];
+}
+@end
+
+@interface BLDFormController : UIViewController <UITextFieldDelegate, UITextViewDelegate, UIGestureRecognizerDelegate, UIDocumentPickerDelegate>
 @property(nonatomic, copy) void (^finish)(void);
 @property(nonatomic, copy) void (^saveFields)(NSString *, NSString *, NSString *);
 @property(nonatomic, copy) NSString *initialCoordinates;
@@ -80,6 +126,15 @@ static NSString *BLDScreenDiagnostics(void) {
 @property(nonatomic, strong) UIButton *diagnosticCopy;
 @property(nonatomic, strong) UIButton *startButton;
 @property(nonatomic, strong) UIButton *stopButton;
+@property(nonatomic,strong) BLDLibrary *library;
+@property(nonatomic,strong) UISwitch *backgroundSwitch;
+@property(nonatomic,strong) UILabel *libraryNotice;
+@property(nonatomic,strong) UIButton *importButton;
+@property(nonatomic,copy) NSString *routeName;
+@property(nonatomic) NSUInteger draftGeneration;
+- (void)loadRecord:(NSDictionary *)item;
+- (void)importURL:(NSURL *)url;
+- (void)saveRouteNamed:(NSString *)name;
 - (void)refreshStatus;
 - (void)rememberFields;
 @end
@@ -121,6 +176,7 @@ static BOOL BLDParseNumber(NSString *text, double *value) {
 @implementation BLDFormController
 - (void)viewDidLoad {
     [super viewDidLoad];
+    self.library=BLDLibrary.sharedLibrary;
     self.title = @"位置情報テスト";
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
@@ -177,6 +233,26 @@ static BOOL BLDParseNumber(NSString *text, double *value) {
     self.status = BLDLabel(@"", UIFontTextStyleFootnote);
     self.status.accessibilityLabel = @"位置情報注入の状態";
     [stack addArrangedSubview:self.status];
+    UIStackView *backgroundRow=[[UIStackView alloc] init];backgroundRow.axis=UILayoutConstraintAxisHorizontal;backgroundRow.alignment=UIStackViewAlignmentCenter;backgroundRow.spacing=12;
+    [backgroundRow addArrangedSubview:BLDLabel(@"バックグラウンドで継続",UIFontTextStyleBody)];
+    self.backgroundSwitch=[[UISwitch alloc] init];self.backgroundSwitch.accessibilityIdentifier=@"bld.backgroundEnabled";
+    id preference=[self.library snapshot][@"draft"][@"background"];self.backgroundSwitch.on=preference?[preference boolValue]:YES;
+    [self.backgroundSwitch addTarget:self action:@selector(backgroundChanged) forControlEvents:UIControlEventValueChanged];
+    [backgroundRow addArrangedSubview:self.backgroundSwitch];[stack addArrangedSubview:backgroundRow];
+    BLDSetBackgroundEnabled(self.backgroundSwitch.on);
+    [stack addArrangedSubview:BLDLabel(@"位置情報の許可があり、iOSがバックグラウンド動作を認めている間に継続します。強制終了・iOSによる停止後の常駐は保証できません。",UIFontTextStyleFootnote)];
+    NSArray *titles=@[@"経路を保存",@"先頭地点を保存",@"保存・履歴",@"ファイル読込"];
+    NSArray *selectors=@[NSStringFromSelector(@selector(saveRoute)),NSStringFromSelector(@selector(savePlace)),NSStringFromSelector(@selector(openLibrary)),NSStringFromSelector(@selector(openImport))];
+    NSArray *identifiers=@[@"bld.saveRoute",@"bld.savePlace",@"bld.openLibrary",@"bld.importFile"];
+    for(NSUInteger row=0;row<2;row++){
+        UIStackView *buttons=[[UIStackView alloc] init];buttons.axis=UILayoutConstraintAxisHorizontal;buttons.spacing=8;buttons.distribution=UIStackViewDistributionFillEqually;
+        for(NSUInteger col=0;col<2;col++){
+            NSUInteger i=row*2+col;UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem];button.configuration=[UIButtonConfiguration tintedButtonConfiguration];[button setTitle:titles[i] forState:UIControlStateNormal];button.accessibilityIdentifier=identifiers[i];[button.heightAnchor constraintGreaterThanOrEqualToConstant:44].active=YES;[button addTarget:self action:NSSelectorFromString(selectors[i]) forControlEvents:UIControlEventTouchUpInside];[buttons addArrangedSubview:button];if(i==3)self.importButton=button;
+        }[stack addArrangedSubview:buttons];
+    }
+    self.libraryNotice=BLDLabel(@"端末内に保存します。読込後は入力を確認してから「開始・更新」を押してください。TXT・CSV・GPX・GeoJSONに対応。",UIFontTextStyleFootnote);
+    [stack addArrangedSubview:self.libraryNotice];
+    if(self.library.loadError)self.libraryNotice.text=self.library.loadError.localizedDescription;
     [stack addArrangedSubview:BLDLabel(@"テスト座標（緯度, 経度）", UIFontTextStyleHeadline)];
     [stack addArrangedSubview:BLDLabel(@"1行なら固定位置。複数行なら、その順に移動します（最大256地点）。開始するまで位置情報は置き換わりません。", UIFontTextStyleFootnote)];
 
@@ -203,12 +279,14 @@ static BOOL BLDParseNumber(NSString *text, double *value) {
     self.speed = BLDNumberField(self.initialSpeed, @"移動速度。メートル毎秒");
     self.speed.inputAccessoryView = self.keyboardToolbar;
     self.speed.delegate = self;
+    [self.speed addTarget:self action:@selector(draftChanged) forControlEvents:UIControlEventEditingChanged];
     self.speed.accessibilityIdentifier = @"bld.speed";
     [stack addArrangedSubview:self.speed];
     [stack addArrangedSubview:BLDLabel(@"水平精度（m、0より大きい数）", UIFontTextStyleHeadline)];
     self.accuracy = BLDNumberField(self.initialAccuracy, @"水平精度。メートル");
     self.accuracy.inputAccessoryView = self.keyboardToolbar;
     self.accuracy.delegate = self;
+    [self.accuracy addTarget:self action:@selector(draftChanged) forControlEvents:UIControlEventEditingChanged];
     self.accuracy.accessibilityIdentifier = @"bld.accuracy";
     [stack addArrangedSubview:self.accuracy];
 
@@ -303,7 +381,86 @@ static BOOL BLDParseNumber(NSString *text, double *value) {
     UIPasteboard.generalPasteboard.string = BLDScreenDiagnostics();
 }
 - (void)rememberFields {
+    if(!self.coordinates)return;
     if (self.saveFields) self.saveFields(self.coordinates.text ?: @"", self.speed.text ?: @"", self.accuracy.text ?: @"");
+    NSError *error=nil;
+    if(![self.library saveDraft:@{@"coordinates":self.coordinates.text?:@"",@"speed":self.speed.text?:@"",@"accuracy":self.accuracy.text?:@"",@"background":@(self.backgroundSwitch.on)} error:&error])self.libraryNotice.text=[@"入力を保存できません：" stringByAppendingString:error.localizedDescription];
+}
+- (void)draftChanged {
+    NSUInteger generation=++self.draftGeneration;
+    __weak BLDFormController *weakSelf=self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.6*NSEC_PER_SEC)),dispatch_get_main_queue(),^{if(weakSelf && weakSelf.draftGeneration==generation)[weakSelf rememberFields];});
+}
+- (void)textViewDidChange:(UITextView *)textView { (void)textView;[self draftChanged]; }
+- (void)backgroundChanged { BLDSetBackgroundEnabled(self.backgroundSwitch.on);[self rememberFields];[self refreshStatus]; }
+- (BOOL)readNumbersSpeed:(double *)speed accuracy:(double *)accuracy {
+    if(!BLDParseNumber(self.speed.text,speed) || *speed<0 || !BLDParseNumber(self.accuracy.text,accuracy) || *accuracy<=0){[self showError:@"速度は0以上、精度は0より大きい数値で指定してください。"];return NO;}return YES;
+}
+- (NSString *)defaultName:(NSString *)prefix {
+    NSDateFormatter *format=[NSDateFormatter new];format.dateFormat=@"yyyy/MM/dd HH:mm";return [NSString stringWithFormat:@"%@ %@",prefix,[format stringFromDate:NSDate.date]];
+}
+- (void)askName:(NSString *)title completion:(void (^)(NSString *))completion {
+    [self dismissKeyboard];UIAlertController *alert=[UIAlertController alertControllerWithTitle:title message:nil preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field){field.text=[self defaultName:title];field.placeholder=@"名前（80文字まで）";field.clearButtonMode=UITextFieldViewModeWhileEditing;field.returnKeyType=UIReturnKeyDone;}];
+    [alert addAction:[UIAlertAction actionWithTitle:@"キャンセル" style:UIAlertActionStyleCancel handler:nil]];
+    __weak UIAlertController *weakAlert=alert;
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action){completion(weakAlert.textFields.firstObject.text?:@"");}]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+- (void)saveRoute {
+    [self askName:@"経路" completion:^(NSString *name){[self saveRouteNamed:name];}];
+}
+- (void)saveRouteNamed:(NSString *)name {
+    NSError *error=nil;NSArray *points=BLDParseCoordinates(self.coordinates.text,256,&error);double speed,accuracy;
+    if(!points){[self showError:error.localizedDescription];return;}if(![self readNumbersSpeed:&speed accuracy:&accuracy])return;
+    if(![self.library addTo:@"routes" name:name points:points speed:speed accuracy:accuracy error:&error]){[self showError:error.localizedDescription];return;}
+    self.routeName=name;self.libraryNotice.text=@"経路を端末内に保存しました。";[self rememberFields];
+}
+- (void)savePlace {
+    NSError *error=nil;NSArray *points=BLDParseCoordinates(self.coordinates.text,256,&error);double speed,accuracy;
+    if(!points){[self showError:error.localizedDescription];return;}if(![self readNumbersSpeed:&speed accuracy:&accuracy])return;
+    NSArray *place=@[points.firstObject];
+    [self askName:@"地点" completion:^(NSString *name){NSError *saveError=nil;if(![self.library addTo:@"places" name:name points:place speed:0 accuracy:accuracy error:&saveError]){[self showError:saveError.localizedDescription];return;}self.libraryNotice.text=@"入力の先頭地点を保存しました。";}];
+}
+- (void)loadRecord:(NSDictionary *)item {
+    self.coordinates.text=item[@"coordinates"];self.speed.text=[item[@"speed"] stringValue];self.accuracy.text=[item[@"accuracy"] stringValue];self.routeName=item[@"name"];
+    self.libraryNotice.text=@"入力欄に読み込みました。「開始・更新」で適用します。";[self rememberFields];
+}
+- (void)openLibrary {
+    [self dismissKeyboard];BLDLibraryController *controller=[[BLDLibraryController alloc] initWithStyle:UITableViewStyleInsetGrouped];controller.library=self.library;
+    __weak BLDFormController *weakSelf=self;controller.choose=^(NSDictionary *item){[weakSelf loadRecord:item];};[self.navigationController pushViewController:controller animated:YES];
+}
+- (void)openImport {
+    [self dismissKeyboard];
+    UIDocumentPickerViewController *picker=[[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypePlainText,UTTypeCommaSeparatedText,UTTypeJSON,UTTypeXML,UTTypeData] asCopy:YES];
+    picker.delegate=self;picker.allowsMultipleSelection=NO;[self presentViewController:picker animated:YES completion:nil];
+}
+- (void)applyImport:(NSDictionary *)item sourceName:(NSString *)sourceName {
+    NSArray *points=item[@"points"];if(points.count>256){self.libraryNotice.text=@"地点数の上限のため読込を中止しました。入力は保持しています。";[self showError:[NSString stringWithFormat:@"この経路は%lu地点あります。上限256地点のため入力は変更していません。圧縮版または分割したファイルを選んでください。",(unsigned long)points.count]];return;}
+    self.coordinates.text=BLDCoordinateText(points);self.routeName=sourceName.length?sourceName:item[@"name"];self.libraryNotice.text=[NSString stringWithFormat:@"%lu地点を入力欄へ読み込みました。開始前に確認してください。",(unsigned long)points.count];[self rememberFields];
+}
+- (void)importURL:(NSURL *)url {
+    self.importButton.enabled=NO;self.libraryNotice.text=@"ファイルを読み込んでいます…";
+    __weak BLDFormController *weakSelf=self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
+        BOOL scoped=[url startAccessingSecurityScopedResource];__block NSError *readError=nil;__block NSData *data=nil;
+        NSFileCoordinator *coordinator=[[NSFileCoordinator alloc] initWithFilePresenter:nil];
+        [coordinator coordinateReadingItemAtURL:url options:NSFileCoordinatorReadingWithoutChanges error:&readError byAccessor:^(NSURL *readingURL){data=BLDReadImportURL(readingURL,&readError);}];
+        NSArray *candidates=data?BLDImportCandidates(data,url.pathExtension,&readError):nil;
+        if(scoped)[url stopAccessingSecurityScopedResource];
+        dispatch_async(dispatch_get_main_queue(),^{
+            BLDFormController *form=weakSelf;if(!form)return;form.importButton.enabled=YES;
+            if(!candidates){[form showError:readError.localizedDescription?:@"ファイルを読み取れません。"];form.libraryNotice.text=@"読込を中止しました。入力は保持しています。";return;}
+            NSString *name=url.lastPathComponent.stringByDeletingPathExtension;
+            if(candidates.count==1){[form applyImport:candidates[0] sourceName:name];return;}
+            UIAlertController *select=[UIAlertController alertControllerWithTitle:@"読み込む経路を選択" message:@"複数の経路が含まれています。" preferredStyle:UIAlertControllerStyleActionSheet];
+            for(NSDictionary *item in candidates){NSString *title=[NSString stringWithFormat:@"%@（%lu地点）",item[@"name"],(unsigned long)[item[@"points"] count]];[select addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action){[form applyImport:item sourceName:item[@"name"]];}]];}
+            [select addAction:[UIAlertAction actionWithTitle:@"キャンセル" style:UIAlertActionStyleCancel handler:^(__unused UIAlertAction *action){form.libraryNotice.text=@"読込をキャンセルしました。入力は保持しています。";}]];select.popoverPresentationController.sourceView=form.importButton;select.popoverPresentationController.sourceRect=form.importButton.bounds;[form presentViewController:select animated:YES completion:nil];
+        });
+    });
+}
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    if(!urls.count)return;NSURL *url=urls.firstObject;[controller dismissViewControllerAnimated:YES completion:^{[self importURL:url];}];
 }
 
 - (void)done {
@@ -322,39 +479,9 @@ static BOOL BLDParseNumber(NSString *text, double *value) {
 
 - (void)start {
     [self dismissKeyboard];
-    NSMutableArray<NSArray<NSNumber *> *> *points = [NSMutableArray array];
-    NSArray<NSString *> *lines = [self.coordinates.text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet];
-    NSUInteger lineNumber = 0;
-    for (NSString *raw in lines) {
-        ++lineNumber;
-        NSString *line = [raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        if (!line.length) continue;
-        NSArray<NSString *> *parts;
-        if ([line containsString:@","]) {
-            parts = [line componentsSeparatedByString:@","];
-        } else {
-            NSMutableArray<NSString *> *tokens = [NSMutableArray array];
-            for (NSString *part in [line componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceCharacterSet]) {
-                if (part.length) [tokens addObject:part];
-            }
-            parts = tokens;
-        }
-        double latitude, longitude;
-        if (parts.count != 2 || !BLDParseNumber(parts[0], &latitude) || !BLDParseNumber(parts[1], &longitude)
-            || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
-            [self showError:[NSString stringWithFormat:@"%lu行目は「緯度, 経度」で入力してください。緯度は−90〜90、経度は−180〜180です。", (unsigned long)lineNumber]];
-            return;
-        }
-        [points addObject:@[@(latitude), @(longitude)]];
-        if (points.count > 256) {
-            [self showError:@"座標は256地点まで入力できます。"];
-            return;
-        }
-    }
-    if (!points.count) {
-        [self showError:@"テストする座標を1地点以上入力してください。"];
-        return;
-    }
+    NSError *parseError=nil;
+    NSArray<NSArray<NSNumber *> *> *points=BLDParseCoordinates(self.coordinates.text,256,&parseError);
+    if(!points){[self showError:parseError.localizedDescription];return;}
     double speed, accuracy;
     if (!BLDParseNumber(self.speed.text, &speed) || speed < 0) {
         [self showError:@"移動速度は0以上の有限の数で入力してください。"];
@@ -365,10 +492,13 @@ static BOOL BLDParseNumber(NSString *text, double *value) {
         return;
     }
     NSError *error = nil;
+    BLDSetBackgroundEnabled(self.backgroundSwitch.on);
     if (!BLDStart(points, speed, accuracy, &error)) {
         [self showError:error.localizedDescription ?: @"位置情報の注入を開始できませんでした。"];
         return;
     }
+    NSError *historyError=nil;
+    if(![self.library addTo:@"history" name:self.routeName?:[self defaultName:@"開始"] points:points speed:speed accuracy:accuracy error:&historyError])self.libraryNotice.text=[@"開始しましたが履歴保存に失敗しました：" stringByAppendingString:historyError.localizedDescription];
     [self.view endEditing:YES];
     [self rememberFields];
     [self refreshStatus];
@@ -416,12 +546,13 @@ static BOOL BLDParseNumber(NSString *text, double *value) {
 @implementation BLDOverlayController
 - (instancetype)init {
     if ((self = [super init])) {
-        _coordinatesText = @"35.681236,139.767125";
-        _speedText = @"1.4";
-        _accuracyText = @"5";
+        NSDictionary *draft=[BLDLibrary.sharedLibrary snapshot][@"draft"];
+        _coordinatesText = draft[@"coordinates"]?:@"35.681236,139.767125";
+        _speedText = draft[@"speed"]?:@"1.4";
+        _accuracyText = draft[@"accuracy"]?:@"5";
         NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
         for (NSString *name in @[UIApplicationDidBecomeActiveNotification, UIApplicationWillEnterForegroundNotification,
-                                 UISceneDidActivateNotification, UISceneWillDeactivateNotification, UISceneDidDisconnectNotification]) {
+                                 UISceneDidActivateNotification, UISceneWillDeactivateNotification, UISceneDidDisconnectNotification, UIApplicationDidEnterBackgroundNotification]) {
             [center addObserver:self selector:@selector(sceneChanged:) name:name object:nil];
         }
         for (NSString *name in @[UIKeyboardWillShowNotification,UIKeyboardWillHideNotification]) {
@@ -454,7 +585,7 @@ static BOOL BLDParseNumber(NSString *text, double *value) {
 }
 
 - (void)sceneChanged:(NSNotification *)note {
-    (void)note;
+    [self.form rememberFields];
     dispatch_async(dispatch_get_main_queue(), ^{
         if ([note.name isEqualToString:UISceneDidDisconnectNotification] && self.window.windowScene == note.object) {
             if (self.navigation) [self closeAnimated:NO];

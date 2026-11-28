@@ -51,7 +51,31 @@ static const void *requestCountKey = &requestCountKey;
 }
 @end
 
+@interface BLDBackgroundFixture : NSObject
+@property(nonatomic) BOOL allowsBackgroundLocationUpdates;
+@property(nonatomic) BOOL pausesLocationUpdatesAutomatically;
+@end
+@implementation BLDBackgroundFixture
+@end
+static void checkBackground(void) {
+    BLDBackgroundFixture *manager=[BLDBackgroundFixture new];manager.pausesLocationUpdatesAutomatically=YES;
+    REQUIRE(!BLDBackgroundPolicyApply(manager,YES,NO),"background requires declared location mode");
+    REQUIRE(!manager.allowsBackgroundLocationUpdates && manager.pausesLocationUpdatesAutomatically,"ineligible background settings untouched");
+    REQUIRE(BLDBackgroundPolicyApply(manager,YES,YES),"eligible manager opts into background updates");
+    REQUIRE(manager.allowsBackgroundLocationUpdates && !manager.pausesLocationUpdatesAutomatically,"background and pause flags applied");
+    REQUIRE(BLDBackgroundPolicyApply(manager,YES,YES),"repeat application keeps original snapshot");
+    REQUIRE(!BLDBackgroundPolicyApply(manager,NO,YES),"stop restores background policy");
+    REQUIRE(!manager.allowsBackgroundLocationUpdates && manager.pausesLocationUpdatesAutomatically,"original flags restored on stop");
+    manager.allowsBackgroundLocationUpdates=YES;manager.pausesLocationUpdatesAutomatically=NO;
+    REQUIRE(BLDBackgroundPolicyApply(manager,YES,YES),"preexisting native background setup accepted");
+    BLDBackgroundPolicyApply(manager,NO,YES);
+    REQUIRE(manager.allowsBackgroundLocationUpdates && !manager.pausesLocationUpdatesAutomatically,"preexisting background setup preserved");
+    REQUIRE(!BLDBackgroundPolicyApply([NSObject new],YES,YES),"unsupported manager fails without location API calls");
+    BLDSetBackgroundEnabled(NO);REQUIRE(!BLDBackgroundEnabled(),"background preference can be disabled");
+    BLDSetBackgroundEnabled(YES);REQUIRE(BLDBackgroundEnabled(),"background preference can be enabled");
+}
 static void checkStartup(void) {
+    checkBackground();
     NSMutableDictionary *info = [@{@"CFBundleIdentifier":@"com.ayato.bumpdebug.2CLB9J3SQB",
         @"CFBundleShortVersionString":@"2.135.0", @"CFBundleVersion":@"261126153935", @"CFBundleExecutable":@"Location"} mutableCopy];
     REQUIRE(BLDIsSupportedBundleInfo(info), "installed team-suffixed identity supported");

@@ -35,6 +35,46 @@ static const void *BLDInjectedLocationKey = &BLDInjectedLocationKey;
 - (void)dealloc { if (_deliveryRunLoop) CFRelease(_deliveryRunLoop); }
 @end
 
+@protocol BLDBackgroundManager <NSObject>
+@property(nonatomic) BOOL allowsBackgroundLocationUpdates;
+@property(nonatomic) BOOL pausesLocationUpdatesAutomatically;
+@end
+@interface BLDBackgroundSnapshot : NSObject
+@property(nonatomic) BOOL allowed;
+@property(nonatomic) BOOL pauses;
+@end
+@implementation BLDBackgroundSnapshot
+@end
+static const void *BLDBackgroundKey=&BLDBackgroundKey;
+BOOL BLDBackgroundPolicyApply(id object,BOOL enabled,BOOL locationModeAllowed) {
+    @synchronized(object) {
+        BLDBackgroundSnapshot *saved=objc_getAssociatedObject(object,BLDBackgroundKey);
+        id<BLDBackgroundManager> manager=object;
+        if(!enabled || !locationModeAllowed){
+            if(saved){
+                @try {
+                    if(manager.allowsBackgroundLocationUpdates)manager.allowsBackgroundLocationUpdates=saved.allowed;
+                    if(!manager.pausesLocationUpdatesAutomatically)manager.pausesLocationUpdatesAutomatically=saved.pauses;
+                } @catch(NSException *exception){(void)exception;}
+                objc_setAssociatedObject(object,BLDBackgroundKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            return NO;
+        }
+        if(saved)return YES;
+        for(NSString *name in @[@"allowsBackgroundLocationUpdates",@"setAllowsBackgroundLocationUpdates:",@"pausesLocationUpdatesAutomatically",@"setPausesLocationUpdatesAutomatically:"])
+            if(![object respondsToSelector:NSSelectorFromString(name)])return NO;
+        saved=[BLDBackgroundSnapshot new];
+        @try {
+            saved.allowed=manager.allowsBackgroundLocationUpdates;saved.pauses=manager.pausesLocationUpdatesAutomatically;
+            manager.allowsBackgroundLocationUpdates=YES;manager.pausesLocationUpdatesAutomatically=NO;
+            objc_setAssociatedObject(object,BLDBackgroundKey,saved,OBJC_ASSOCIATION_RETAIN_NONATOMIC);return YES;
+        } @catch(NSException *exception){
+            (void)exception;@try {manager.allowsBackgroundLocationUpdates=saved.allowed;manager.pausesLocationUpdatesAutomatically=saved.pauses;} @catch(NSException *restore){(void)restore;}
+            return NO;
+        }
+    }
+}
+
 @interface BLDController : NSObject {
 @public
     BLDPoint points[BLD_ROUTE_MAX_POINTS];
@@ -49,6 +89,7 @@ static const void *BLDInjectedLocationKey = &BLDInjectedLocationKey;
     NSUInteger generation;
 }
 @property(nonatomic, strong) NSHashTable<CLLocationManager *> *managers;
+@property(nonatomic) BOOL backgroundEnabled;
 @end
 @implementation BLDController
 @end
@@ -59,6 +100,7 @@ static BLDController *BLDShared(void) {
     dispatch_once(&once, ^{
         controller = [BLDController new];
         controller.managers = [NSHashTable weakObjectsHashTable];
+        controller.backgroundEnabled = YES;
     });
     return controller;
 }
@@ -85,6 +127,37 @@ static BLDManagerState *BLDState(CLLocationManager *manager, BOOL create) {
         return state;
     }
 }
+
+static void BLDUpdateBackground(CLLocationManager *manager) {
+    BLDManagerState *state=BLDState(manager,NO);
+    if(!state)return;
+    CFRunLoopRef loop=NULL;
+    @synchronized(state){if(state.deliveryRunLoop)loop=(CFRunLoopRef)CFRetain(state.deliveryRunLoop);}
+    if(!loop)return; // Wait for an observed native callback; never create another manager.
+    __weak CLLocationManager *weakManager=manager;
+    void (^apply)(void)=^{
+        CLLocationManager *current=weakManager;if(!current)return;
+        BLDController *controller=BLDShared();BOOL enabled;
+        @synchronized(controller){enabled=controller->enabled && controller.backgroundEnabled;}
+        BLDManagerState *currentState=BLDState(current,NO);BOOL continuous=NO;
+        @synchronized(currentState){continuous=currentState.continuous;}
+        BOOL allowed=NO;
+#ifndef BLD_TEST_HOST
+        id modes=NSBundle.mainBundle.infoDictionary[@"UIBackgroundModes"];
+        allowed=[modes isKindOfClass:NSArray.class] && [modes containsObject:@"location"];
+#endif
+        BLDBackgroundPolicyApply(current,enabled && continuous && BLDDelegateIndex(current.delegate)>=0,allowed);
+    };
+    if(CFRunLoopGetCurrent()==loop)apply();
+    else {CFRunLoopPerformBlock(loop,kCFRunLoopCommonModes,apply);CFRunLoopWakeUp(loop);}
+    CFRelease(loop);
+}
+void BLDSetBackgroundEnabled(BOOL enabled) {
+    BLDController *controller=BLDShared();NSArray *managers;
+    @synchronized(controller){controller.backgroundEnabled=enabled;managers=controller.managers.allObjects;}
+    for(CLLocationManager *manager in managers)BLDUpdateBackground(manager);
+}
+BOOL BLDBackgroundEnabled(void) { BLDController *controller=BLDShared();@synchronized(controller){return controller.backgroundEnabled;} }
 
 static CLLocation *BLDSaveLatest(BLDManagerState *state, CLLocation *location, NSUInteger generation) {
     @synchronized(state) {
@@ -134,6 +207,7 @@ static void BLDReceivedLocations(id delegate, SEL selector, CLLocationManager *m
             }
         }
         @synchronized(controller) { controller->received++; }
+        BLDUpdateBackground(manager);
     }
     NSUInteger generation;
     @synchronized(controller) { generation = controller->generation; }
@@ -265,12 +339,16 @@ BOOL BLDStart(NSArray<NSArray<NSNumber *> *> *route, double speed, double accura
         controller->enabled = YES;
     }
     BLDEnsureTimer();
+    NSArray *managers;@synchronized(controller){managers=controller.managers.allObjects;}
+    for(CLLocationManager *manager in managers)BLDUpdateBackground(manager);
     return YES;
 }
 
 void BLDStop(void) {
     BLDController *controller = BLDShared();
-    @synchronized(controller) { controller->enabled = NO; controller->generation++; }
+    NSArray *managers;
+    @synchronized(controller) { controller->enabled = NO; controller->generation++; managers=controller.managers.allObjects; }
+    for(CLLocationManager *manager in managers)BLDUpdateBackground(manager);
 }
 
 BOOL BLDIsEnabled(void) {
@@ -291,9 +369,9 @@ NSString *BLDStatusText(void) {
             if (BLDDelegateIndex(manager.delegate) >= 0) managers++;
         }
     }
-    return [NSString stringWithFormat:@"位置情報の置換：%@\n対象フック：%lu/2　位置取得：%lu\n更新の受信：%lu　注入：%lu（定期：%lu）\nBump内部への合成入力です。システム全体の位置や、Core Locationの出所判定の実装は書き換えません。",
+    return [NSString stringWithFormat:@"位置情報の置換：%@\n対象フック：%lu/2　位置取得：%lu\n更新の受信：%lu　注入：%lu（定期：%lu）\nBump内部への合成入力です。システム全体の位置や、Core Locationの出所判定の実装は書き換えません。\n背景継続：%@（位置情報の許可・iOSの稼働が必要）",
         on ? @"ON" : @"OFF", (unsigned long)BLDInstalledCount, (unsigned long)managers,
-        (unsigned long)received, (unsigned long)injected, (unsigned long)synthetic];
+        (unsigned long)received, (unsigned long)injected, (unsigned long)synthetic, BLDBackgroundEnabled() ? @"有効" : @"無効"];
 }
 
 static void (*BLDOriginalSetDelegate)(id, SEL, id);
@@ -353,16 +431,19 @@ static BOOL BLDInstallContainerFallback(void) {
 static void BLDSetDelegate(id manager, SEL selector, id delegate) {
     BLDOriginalSetDelegate(manager, selector, delegate);
     if (BLDDelegateIndex(delegate) >= 0) BLDState(manager, YES);
+    BLDUpdateBackground(manager);
 }
 static void BLDStartUpdating(id manager, SEL selector) {
     BLDManagerState *state = BLDState(manager, YES);
     @synchronized(state) { state.continuous = YES; }
     BLDOriginalStart(manager, selector);
+    BLDUpdateBackground(manager);
 }
 static void BLDStopUpdating(id manager, SEL selector) {
     BLDManagerState *state = BLDState(manager, NO);
     if (state) @synchronized(state) { state.continuous = NO; }
     BLDOriginalStop(manager, selector);
+    BLDUpdateBackground(manager);
 }
 static void BLDStartSignificant(id manager, SEL selector) {
     BLDManagerState *state = BLDState(manager, YES);
